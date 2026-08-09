@@ -1,7 +1,7 @@
-From feb45bdaef8b8e5a4d5f7715017c7b6753fb3dd7 Mon Sep 17 00:00:00 2001
+From 8a330c66eb53e3e71839b621ff6ea6efd69aa101 Mon Sep 17 00:00:00 2001
 From: Claude Fable 5 <noreply@anthropic.com>
 Date: Sun, 19 Jul 2026 14:53:47 -0400
-Subject: [PATCH 03/10] save playlists atomically via a temporary file
+Subject: [PATCH 04/11] save playlists atomically via a temporary file
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
