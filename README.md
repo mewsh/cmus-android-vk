@@ -114,6 +114,8 @@ If you aren't able to load tracks from your Music directory (or want to use a di
 
 You may also need to use the all files permission if some of your media files are not indexed by the MediaStore (due to transfer issues or unsupported formats).
 
+For M4A/AAC files, only HE-AAC and AAC-LC are supported (HE-AAC v2 and ALAC aren't).
+
 There are also debug options in settings for troubleshooting the internal IPC socket.
 
 The debug logs from cmus itself are only visible on debuggable builds and need to be explicitly enabled in settings.
