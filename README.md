@@ -112,6 +112,8 @@ If cmus fails to start, there are reset options with various levels of granulari
 
 If you aren't able to load tracks from your Music directory (or want to use a different directory), grant the all files access permission on the app settings, then restart it.
 
+You may also need to use the all files permission if some of your media files are not indexed by the MediaStore (due to transfer issues or unsupported formats).
+
 There are also debug options in settings for troubleshooting the internal IPC socket.
 
 The debug logs from cmus itself are only visible on debuggable builds and need to be explicitly enabled in settings.

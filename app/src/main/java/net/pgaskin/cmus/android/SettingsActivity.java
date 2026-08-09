@@ -240,7 +240,7 @@ public class SettingsActivity extends Activity {
         refreshers.add(() -> allFilesSubtitle.setText(Environment.isExternalStorageManager()
                 ? "Granted. The browser opens at the storage root and can reach any folder."
                 : "Optional. Tap to browse folders outside Music; may also work around "
-                        + "storage issues on some devices."));
+                        + "storage issues on some devices, or tracks not indexed by the MediaStore."));
 
         switchPrefRow("Show top bar", "The view tabs, filter, and sleep timer. When "
                         + "hidden, the sleep timer and settings are shown as floating buttons.",
