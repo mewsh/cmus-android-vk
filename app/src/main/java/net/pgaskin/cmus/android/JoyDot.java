@@ -53,7 +53,7 @@ public final class JoyDot extends View {
     private static final int KNOB_ALPHA_ACTIVE = 0x8C;
     /** Repeat cadence bounds; displacement interpolates between them. */
     private static final long REPEAT_SLOW_MS = 300;
-    private static final long REPEAT_FAST_MS = 75;
+    private static final long REPEAT_FAST_MS = 30;
     /** Nav (pane/view) repeat bounds — much slower, it changes context. */
     private static final long NAV_SLOW_MS = 750;
     private static final long NAV_FAST_MS = 250;
@@ -72,6 +72,9 @@ public final class JoyDot extends View {
     private final int knobTravel = dp(44);
     /** Vertical displacement where the arrows start. */
     private final int vertThreshold = dp(15);
+    /** Buffer past the threshold that stays at the base rate (the
+     * ramp only starts after moving at least this far). */
+    private final int vertRamp = dp(24);
     /** Vertical displacement where the repeat reaches full speed. */
     private final int vertFull = dp(60);
     /** "Far left"/"far right": where the nav gesture fires... */
@@ -309,19 +312,19 @@ public final class JoyDot extends View {
     }
 
     private long repeatInterval() {
-        return lerpCadence(Math.abs(dy), vertThreshold, vertFull, REPEAT_SLOW_MS, REPEAT_FAST_MS);
+        return rampCadence(Math.abs(dy), vertRamp, vertFull, REPEAT_SLOW_MS, REPEAT_FAST_MS);
     }
 
     private long navInterval() {
-        return lerpCadence(Math.abs(dx), navThreshold, navFull, NAV_SLOW_MS, NAV_FAST_MS);
+        return rampCadence(Math.abs(dx), navThreshold, navFull, NAV_SLOW_MS, NAV_FAST_MS);
     }
 
-    /** Interpolate the repeat delay: threshold→slow, full→fast, clamped. */
-    private static long lerpCadence(float displacement, float threshold, float full,
+    /** Decrease the repeat delay geometrically. */
+    private static long rampCadence(float displacement, float threshold, float full,
             long slowMs, long fastMs) {
         float t = (displacement - threshold) / (full - threshold);
         t = Math.max(0f, Math.min(t, 1f));
-        return Math.round(slowMs + t * (fastMs - slowMs));
+        return Math.round(slowMs * Math.pow((double) fastMs / slowMs, t));
     }
 
     private void stopRepeat() {
