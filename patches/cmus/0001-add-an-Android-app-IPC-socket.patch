@@ -1,7 +1,7 @@
-From 82fa9cc97207a421c391bfc205e79dc7a9e8c790 Mon Sep 17 00:00:00 2001
+From 65e83dea87365a6c5c9e3b726afe7dad8531d431 Mon Sep 17 00:00:00 2001
 From: Claude Fable 5 <noreply@anthropic.com>
 Date: Sat, 18 Jul 2026 16:29:26 -0400
-Subject: [PATCH 04/13] add an Android app IPC socket
+Subject: [PATCH 01/10] add an Android app IPC socket
 
 A unix stream socket at $CMUS_ANDROID_SOCKET (unset = disabled) for the
 Android wrapper app: pushes newline-delimited JSON events (status,
@@ -1235,7 +1235,7 @@ index f93e649..8b66ab5 100644
  		}
  		entryp = &e->next;
 diff --git a/pl.c b/pl.c
-index 2d15d19..50af6de 100644
+index acf29f6..7ac8348 100644
 --- a/pl.c
 +++ b/pl.c
 @@ -17,6 +17,7 @@
@@ -1271,7 +1271,7 @@ index 2d15d19..50af6de 100644
  
  	pl_mark_for_redraw();
  }
-@@ -987,6 +992,7 @@ void pl_create(const char *name)
+@@ -989,6 +994,7 @@ void pl_create(const char *name)
  	struct playlist *pl = pl_new(name);
  	list_add_tail(&pl->node, &pl_head);
  	pl_list_win->changed = 1;
@@ -1279,7 +1279,7 @@ index 2d15d19..50af6de 100644
  }
  
  int pl_visible_is_marked(void)
-@@ -1010,6 +1016,17 @@ void pl_set_marked_pl_by_name(const char *name)
+@@ -1012,6 +1018,17 @@ void pl_set_marked_pl_by_name(const char *name)
  	}
  }
  
@@ -1422,7 +1422,7 @@ index 9b55874..4a0643c 100644
  void search_text(const char *text, int restricted, int beginning);
  
 diff --git a/ui_curses.c b/ui_curses.c
-index bdb766a..f05ae71 100644
+index 0ff6ed6..211d061 100644
 --- a/ui_curses.c
 +++ b/ui_curses.c
 @@ -50,8 +50,12 @@
@@ -1446,7 +1446,7 @@ index bdb766a..f05ae71 100644
  	switch (cur_view) {
  	case TREE_VIEW:
  		searchable = tree_searchable;
-@@ -2241,6 +2246,8 @@ static void main_loop(void)
+@@ -2248,6 +2253,8 @@ static void main_loop(void)
  
  		update();
  
@@ -1455,7 +1455,7 @@ index bdb766a..f05ae71 100644
  		/* Timeout must be so small that screen updates seem instant.
  		 * Only affects changes done in other threads (player).
  		 *
-@@ -2264,6 +2271,10 @@ static void main_loop(void)
+@@ -2271,6 +2278,10 @@ static void main_loop(void)
  		SELECT_ADD_FD(server_socket);
  		if (mpris_fd != -1)
  			SELECT_ADD_FD(mpris_fd);
@@ -1466,7 +1466,7 @@ index bdb766a..f05ae71 100644
  		list_for_each_entry(client, &client_head, node) {
  			SELECT_ADD_FD(client->fd);
  		}
-@@ -2344,6 +2355,12 @@ static void main_loop(void)
+@@ -2351,6 +2362,12 @@ static void main_loop(void)
  		if (mpris_fd != -1 && FD_ISSET(mpris_fd, &set))
  			mpris_process();
  
@@ -1479,7 +1479,7 @@ index bdb766a..f05ae71 100644
  		if (FD_ISSET(job_fd, &set))
  			job_handle();
  
-@@ -2471,6 +2488,7 @@ static void init_all(void)
+@@ -2478,6 +2495,7 @@ static void init_all(void)
  	pl_init_options();
  	if (mpris)
  		mpris_init();
@@ -1487,7 +1487,7 @@ index bdb766a..f05ae71 100644
  
  	/* finally we can set the output plugin */
  	player_set_op(output_plugin);
-@@ -2512,6 +2530,44 @@ static void init_all(void)
+@@ -2519,6 +2537,44 @@ static void init_all(void)
  	worker_start();
  }
  
@@ -1532,7 +1532,7 @@ index bdb766a..f05ae71 100644
  static void exit_all(void)
  {
  	endwin();
-@@ -2540,6 +2596,7 @@ static void exit_all(void)
+@@ -2547,6 +2603,7 @@ static void exit_all(void)
  	help_exit();
  	browser_exit();
  	mpris_free();

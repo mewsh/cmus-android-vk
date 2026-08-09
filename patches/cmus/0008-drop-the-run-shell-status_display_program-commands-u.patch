@@ -1,7 +1,7 @@
-From c1a71683f73ccb9b1b0720de3e7c6a92ca34d2a2 Mon Sep 17 00:00:00 2001
+From aa8430e33cb130e13ce6759ee83cb86f8983ea74 Mon Sep 17 00:00:00 2001
 From: "Claude Opus 4.8" <noreply@anthropic.com>
 Date: Sun, 19 Jul 2026 20:36:45 -0400
-Subject: [PATCH 11/13] drop the run/shell/status_display_program commands
+Subject: [PATCH 08/10] drop the run/shell/status_display_program commands
  under CONFIG_ANDROID
 
 These are the only spawn() callers. The app runs no external processes, so
@@ -91,7 +91,7 @@ index 08593ed..8b2be91 100644
  	DT(skip_track_info)
  	DT(ignore_duplicates)
 diff --git a/ui_curses.c b/ui_curses.c
-index 74ba281..5314fd3 100644
+index 73692b8..8753e95 100644
 --- a/ui_curses.c
 +++ b/ui_curses.c
 @@ -1794,6 +1794,8 @@ static void clear_error(void)
@@ -100,18 +100,18 @@ index 74ba281..5314fd3 100644
  
 +/* status_display_program is disabled in the app (no external processes) */
 +#ifndef CONFIG_ANDROID
- static int fill_status_program_track_info_args(char **argv, int i, struct track_info *ti)
+ static int fill_status_program_track_info_args(char **argv, int i, struct player_info *pi, struct track_info *ti)
  {
  	/* returns first free argument index */
-@@ -1875,6 +1877,7 @@ static void spawn_status_program(void)
+@@ -1882,6 +1884,7 @@ static void spawn_status_program(void)
  {
- 	spawn_status_program_inner(player_status_names[player_info.status], player_info.ti);
+ 	spawn_status_program_inner(player_status_names[player_info.status], &player_info, player_info.ti);
  }
 +#endif
  
  static volatile sig_atomic_t ctrl_c_pressed = 0;
  
-@@ -1967,7 +1970,9 @@ static void update(void)
+@@ -1974,7 +1977,9 @@ static void update(void)
  	int needs_title_update = 0;
  	int needs_status_update = 0;
  	int needs_command_update = 0;
@@ -121,7 +121,7 @@ index 74ba281..5314fd3 100644
  
  	if (first_update) {
  		needs_title_update = 1;
-@@ -1988,8 +1993,10 @@ static void update(void)
+@@ -1995,8 +2000,10 @@ static void update(void)
  	if (player_info.file_changed || player_info.metadata_changed)
  		mpris_metadata_changed();
  
@@ -132,7 +132,7 @@ index 74ba281..5314fd3 100644
  
  	if (player_info.file_changed) {
  		needs_title_update = 1;
-@@ -2033,8 +2040,10 @@ static void update(void)
+@@ -2040,8 +2047,10 @@ static void update(void)
  		needs_status_update += pl_needs_redraw();
  	}
  
@@ -143,12 +143,12 @@ index 74ba281..5314fd3 100644
  
  	if (needs_view_update || needs_title_update || needs_status_update || needs_command_update) {
  		curs_set(0);
-@@ -2724,6 +2733,8 @@ int main(int argc, char *argv[])
+@@ -2731,6 +2740,8 @@ int main(int argc, char *argv[])
  	init_all();
  	main_loop();
  	exit_all();
 +#ifndef CONFIG_ANDROID
- 	spawn_status_program_inner("exiting", NULL);
+ 	spawn_status_program_inner("exiting", NULL, NULL);
 +#endif
  	return 0;
  }
