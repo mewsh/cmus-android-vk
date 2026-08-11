@@ -10,7 +10,7 @@ Although the code is almost entirely written and maintained by Claude, I made mo
 
 I already did most of the actual porting work earlier to make it work well on Termux, including the AAudio output plugin, portability and build fixes, playlist env var stuff, and so on. This project is mostly the UI and system integration.
 
-[**`Download`**](https://github.com/pgaskin/cmus-android/releases/latest)
+[**`Download`**](https://github.com/pgaskin/cmus-android/releases/latest) [**`Website`**](https://pgaskin.net/cmus-android/)
 
 ### Screenshots
 
