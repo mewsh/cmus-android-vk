@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cmus for Android</title>
+  <link rel="icon" href="icon.png">
+  <meta name="theme-color" content="#0c0e10">
+  <meta name="author" content="Patrick Gaskin">
+  <meta name="description" content="Port of the cmus music player for Android, with system integration and some extra UI features.">
+  <meta property="og:description" content="Port of the cmus music player for Android, with system integration and some extra UI features.">
+  <meta property="og:title" content="cmus for Android">
+  <meta property="og:type" content="website">
+  <link rel="canonical" href="https://pgaskin.net/cmus-android/">
+  <style>
+    @font-face {
+      font-family: "Roboto";
+      src: url("roboto.woff2") format("woff2");
+      font-weight: 400 700;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Roboto Mono";
+      src: url("mono.woff2") format("woff2");
+      font-weight: 400 700;
+      font-style: normal;
+      font-display: swap;
+    }
+    :root {
+      color-scheme: dark;
+      /* material you, dark, neutral scheme from a blue-grey source (#546e7a) */
+      --bg-deep: #0c0e10;
+      --bg: #121415;
+      --surface-high: #282a2b;
+      --line: #2f3132;
+      --outline: #5d5e60;
+      --fg: #e2e2e3;
+      --muted: #aaabac;
+      --primary: #c0c8cc;
+      --primary-bright: #dce4e9;
+      --primary-container: #c0c8cc;
+      --on-primary-container: #192124;
+      /* the green from the app icon, and a muted tone of it */
+      --accent: #7fbf7f;
+      --accent-dim: #94b391;
+      --sans: "Roboto", system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      --mono: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --pad: clamp(1.25rem, 5vw, 2.5rem);
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: var(--bg-deep);
+      color: var(--fg);
+      font-family: var(--sans);
+      font-size: 1.0625rem;
+      line-height: 1.6;
+      font-synthesis: none;
+      -webkit-font-smoothing: antialiased;
+    }
+    a {
+      color: var(--primary);
+      text-decoration: none;
+    }
+    a:hover {
+      color: var(--primary-bright);
+      text-decoration: underline;
+    }
+    p a {
+      text-decoration: underline;
+      text-decoration-color: var(--outline);
+      text-underline-offset: .15em;
+    }
+    img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+    h1, h2, h3 {
+      font-family: var(--mono);
+      line-height: 1.15;
+      margin: 0;
+    }
+    .wrap {
+      width: 100%;
+      max-width: 70rem;
+      margin-inline: auto;
+      padding-inline: var(--pad);
+    }
+    .hero {
+      padding-block: clamp(3.5rem, 9vw, 7rem) clamp(1.5rem, 3vw, 2.5rem);
+    }
+    .hero h1 {
+      font-size: clamp(1.625rem, 6.4vw, 4.25rem);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .tagline {
+      margin: 1.25rem 0 0;
+      max-width: 46ch;
+      font-size: clamp(1rem, 2vw, 1.1875rem);
+      color: var(--fg);
+      text-wrap: pretty;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .75rem;
+      margin-top: 2.125rem;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .5em;
+      padding: .8em 1.5em;
+      border: 1px solid transparent;
+      font-weight: 700;
+      font-size: 1rem;
+      text-decoration: none;
+      transition: background-color .12s ease, border-color .12s ease;
+    }
+    .btn:hover {
+      text-decoration: none;
+    }
+    .btn-primary {
+      background: var(--primary-container);
+      color: var(--on-primary-container);
+    }
+    .btn-primary:hover {
+      background: var(--primary-bright);
+      color: var(--on-primary-container);
+    }
+    .btn-ghost {
+      border-color: var(--outline);
+      color: var(--fg);
+      backdrop-filter: blur(0.375rem);
+      background: rgba(26, 28, 29, .4);
+    }
+    .btn-ghost:hover {
+      background: var(--surface-high);
+      border-color: var(--muted);
+      color: var(--fg);
+    }
+    .hero-meta {
+      font-family: var(--mono);
+      margin-top: 1.5rem;
+      font-size: .875rem;
+      color: var(--muted);
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem 1rem;
+    }
+    .hero-meta span {
+      white-space: nowrap;
+    }
+    section {
+      padding-block: clamp(4rem, 9vw, 6.75rem);
+    }
+    .alt {
+      background: var(--bg);
+    }
+    h2 {
+      font-size: clamp(1.5rem, 3.6vw, 2.25rem);
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .features {
+      margin-top: 3.25rem;
+      display: grid;
+      gap: clamp(2rem, 4.5vw, 3.25rem) clamp(1.75rem, 5vw, 3.75rem);
+      grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    }
+    .feature h3 {
+      font-size: 1.0625rem;
+      font-weight: 700;
+      margin-bottom: .625rem;
+      color: var(--accent-dim);
+    }
+    .feature p {
+      margin: 0;
+      color: var(--muted);
+      font-size: .9375rem;
+      line-height: 1.55;
+    }
+    .shots {
+      margin-top: 2.625rem;
+      display: grid;
+      gap: clamp(1rem, 2.5vw, 1.75rem) clamp(0.875rem, 2vw, 1.375rem);
+      grid-template-columns: repeat(4, 1fr);
+    }
+    @media (max-width: 53.75rem) {
+      .shots {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+    .shot {
+      margin: 0;
+      min-width: 0;
+    }
+    .shot img {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #000;
+    }
+    .shot figcaption {
+      margin-top: .625rem;
+      font-size: .8125rem;
+      line-height: 1.4;
+      color: var(--muted);
+    }
+    .changelog {
+      margin-top: 2.25rem;
+    }
+    summary {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+    }
+    summary::-webkit-details-marker {
+      display: none;
+    }
+    .release summary {
+      font-family: var(--mono);
+      padding-block: .625rem;
+      font-weight: 700;
+    }
+    .release summary::before {
+      content: "";
+      width: .4375rem;
+      height: .4375rem;
+      border-right: 2px solid var(--outline);
+      border-bottom: 2px solid var(--outline);
+      transform: translateX(1px) rotate(-45deg);
+      transition: transform .15s ease;
+    }
+    .release[open] summary::before {
+      transform: translateY(-2px) rotate(45deg);
+    }
+    .release ul {
+      margin: 0;
+      padding: 0 0 1.125rem 1.1875rem;
+      color: var(--muted);
+      font-size: .9375rem;
+      line-height: 1.55;
+    }
+    .release li {
+      margin-bottom: .25rem;
+    }
+    .more[open]>summary {
+      display: none;
+    }
+    .more>summary {
+      width: fit-content;
+      margin-top: 1rem;
+      color: var(--primary);
+      font-size: .9375rem;
+    }
+    .more>summary:hover {
+      color: var(--primary-bright);
+      text-decoration: underline;
+    }
+    footer {
+      padding-block: 2.75rem 3.5rem;
+      color: var(--muted);
+      font-size: .875rem;
+    }
+    footer .wrap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .875rem 1.75rem;
+      align-items: center;
+    }
+    footer nav {
+      margin-left: auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem 1.375rem;
+    }
+    footer nav a {
+      color: var(--muted);
+    }
+    footer nav a:hover {
+      color: var(--fg);
+    }
+    @media (max-width: 43.75rem) {
+      footer .wrap {
+        flex-direction: column;
+        justify-content: center;
+        text-align: center;
+        gap: .75rem;
+      }
+      footer nav {
+        margin-left: 0;
+        justify-content: center;
+        gap: .5rem 1rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="hero">
+      <div class="wrap">
+        <h1>cmus for Android</h1>
+        <p class="tagline">
+          Port of the cmus music player for Android, with system integration
+          and some extra UI features.
+        </p>
+        <div class="actions">
+          <a class="btn btn-primary"
+            href="https://github.com/pgaskin/cmus-android/releases/latest/download/cmus.apk">Download</a>
+          <a class="btn btn-ghost" href="https://github.com/pgaskin/cmus-android">Source code</a>
+        </div>
+        <p class="hero-meta">
+          <!-- VERSION -->
+          <span>Android 14+</span>
+          <span>arm64</span>
+          <span>GPL-2.0</span>
+        </p>
+      </div>
+    </div>
+    <section id="features">
+      <div class="wrap">
+        <h2>Features</h2>
+        <div class="features">
+          <div class="feature">
+            <h3>Upstream cmus</h3>
+            <p>
+              This app embeds a statically compiled cmus build and works with
+              existing keybindings, commands, and config files.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>Touch controls</h3>
+            <p>
+              A top bar with the live filter, views, and settings, and a bottom
+              bar with play, repeat, shuffle, seek, volume, queue, and the
+              keyboard.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>Joystick</h3>
+            <p>
+              A floating dot for efficiently scrolling and switching
+              panes/views.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>Long-press actions</h3>
+            <p>
+              Long-press a track or playlist to remove it or add it to a
+              playlist.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>Settings view</h3>
+            <p>
+              A graphical view with the app-specific options, plus most of the
+              relevant cmus ones.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>System integration</h3>
+            <p>
+              Media controls and metadata on the lock screen, media buttons,
+              album art, audio ducking, and AAudio output.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>Power usage</h3>
+            <p>
+              The app stops cmus when idle and restarts it when used. The state
+              is saved continuously and automatically restored. Also, cmus uses
+              less CPU than most other apps which use the native Android codecs.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>Colors</h3>
+            <p>
+              The app chrome uses the colors from the active cmus theme. There
+              is also a Material You cmus theme which follows the system colors.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>Fonts</h3>
+            <p>
+              Including Iosevka, Fira Mono, IBM Plex Mono, JetBrains Mono,
+              Roboto Mono, or the system font. The font size can be changed by
+              pinching.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>External storage</h3>
+            <p>
+              Plays music files from the MediaStore, or from anywhere else with
+              the optional all-files permission. Library paths are relative to
+              the data dirs, so import and export work correctly.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>Codecs</h3>
+            <p>
+              FLAC, Vorbis, Opus, MP3, WavPack, AAC, MP4, WAV, and CUE sheets
+              using built-in decoders.
+            </p>
+          </div>
+          <div class="feature">
+            <h3>Open source</h3>
+            <p>
+              GPL-2.0, no ads, no tracking, and reproducible builds.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="alt" id="screenshots">
+      <div class="wrap">
+        <h2>Screenshots</h2>
+        <div class="shots">
+          <figure class="shot">
+            <img src="shot-1.jpg" alt="The library view with the filter and view tabs at the top and playback controls at the bottom" loading="lazy" width="540" height="1200">
+            <figcaption>Tree view.</figcaption>
+          </figure>
+          <figure class="shot">
+            <img src="shot-3.jpg" alt="The theme picker open over the library view, listing the bundled cmus colorschemes" loading="lazy" width="540" height="1200">
+            <figcaption>Theme picker.</figcaption>
+          </figure>
+          <figure class="shot">
+            <img src="shot-2.jpg" alt="The settings screen with switches for the bars, joystick, zoom level, and idle quit" loading="lazy" width="540" height="1200">
+            <figcaption>Settings.</figcaption>
+          </figure>
+          <figure class="shot">
+            <img src="shot-4.jpg" alt="A phone lock screen showing the media notification with album art for the playing track" loading="lazy" width="540" height="1200">
+            <figcaption>System media controls and album art.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+    <section id="changelog">
+      <div class="wrap">
+        <h2>What's new</h2>
+        <div class="changelog">
+          <!-- CHANGELOG -->
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer>
+    <div class="wrap">
+      <span>&copy; 2026 Patrick Gaskin</span>
+      <nav>
+        <a href="https://github.com/pgaskin/cmus-android">Source</a>
+        <a href="https://github.com/pgaskin/cmus-android/releases">Releases</a>
+        <a href="https://github.com/pgaskin/cmus-android/issues">Issues</a>
+        <a href="https://cmus.github.io/">cmus</a>
+        <a href="https://pgaskin.net">pgaskin.net</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
