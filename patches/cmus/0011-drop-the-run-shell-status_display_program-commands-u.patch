@@ -1,7 +1,7 @@
-From 3ee303c5dda014da5eb989722cc7435e5910a176 Mon Sep 17 00:00:00 2001
+From 80a098327c622ecfe9000a9cbf93ec14af6b3a6a Mon Sep 17 00:00:00 2001
 From: "Claude Opus 4.8" <noreply@anthropic.com>
 Date: Sun, 19 Jul 2026 20:36:45 -0400
-Subject: [PATCH 12/14] drop the run/shell/status_display_program commands
+Subject: [PATCH 11/13] drop the run/shell/status_display_program commands
  under CONFIG_ANDROID
 
 These are the only spawn() callers. The app runs no external processes, so

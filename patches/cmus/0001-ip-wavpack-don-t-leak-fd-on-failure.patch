@@ -1,7 +1,7 @@
-From d6bdbc26cb73d5f38c98df306017e4f744fe489a Mon Sep 17 00:00:00 2001
+From 8c0da8d55091a44be7e1539ef9d0311905a13881 Mon Sep 17 00:00:00 2001
 From: Patrick Gaskin <patrick@pgaskin.net>
 Date: Wed, 23 Sep 2026 22:43:43 -0400
-Subject: [PATCH 02/14] ip/wavpack: don't leak fd on failure
+Subject: [PATCH 01/13] ip/wavpack: don't leak fd on failure
 
 
 diff --git a/ip/wavpack.c b/ip/wavpack.c

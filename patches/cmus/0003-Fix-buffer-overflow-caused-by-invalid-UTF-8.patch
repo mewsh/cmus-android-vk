@@ -1,7 +1,7 @@
-From ae74e26021ceb9725a59bdfbc347150c6367c6a3 Mon Sep 17 00:00:00 2001
+From 51073c4f542e6428c0ec7fe4e2e66993b5d3fb0e Mon Sep 17 00:00:00 2001
 From: Patrick Gaskin <patrick@pgaskin.net>
 Date: Thu, 24 Sep 2026 00:43:22 -0400
-Subject: [PATCH 04/14] Fix buffer overflow caused by invalid UTF-8
+Subject: [PATCH 03/13] Fix buffer overflow caused by invalid UTF-8
 
 fixes #1448
 

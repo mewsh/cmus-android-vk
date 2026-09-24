@@ -3,6 +3,17 @@
 Newest entries first. One entry per work session/stage; enough context to
 pick up where things left off.
 
+## 2026-09-24 — cmus rebased onto upstream b69fb9c: 0001 (aaudio remap buffer size) merged (built)
+
+- **Pin:** third_party/cmus gitlink 293d4935 → b69fb9cd ("op/aaudio: fix
+  remap buffer size", upstream master 2026-08-09; the only commit since the
+  old pin). Its diff is byte-identical to our former 0001, so `git rebase
+  --onto origin/master base` dropped it automatically; `base` re-tagged.
+- **Stack:** 13 patches, everything shifts down one — 0001 wavpack, 0002
+  opus, 0003 invalid-UTF-8, 0004 IPC socket … 0013 removed-options.
+  architecture.md renumbered; entries below keep their historical numbers.
+- **Verified:** `:app:assembleDebug` green, `./patch.sh check` OK.
+
 ## 2026-09-24 — Patch 0004: invalid-UTF-8 print-size overflow (cmus/cmus#1520; built, not device-tested)
 
 - **What:** Patrick's "Fix buffer overflow caused by invalid UTF-8" (fork
