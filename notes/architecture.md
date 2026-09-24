@@ -35,7 +35,27 @@ full plan and rationale; this file describes what currently exists.
   patch files from base..HEAD (`-n` skips regen). `./patch.sh check` is
   read-only; the `:app:patchCheck` Exec task runs it before `preBuild` so
   builds fail with a hint when patches exist but aren't applied.
-- patches/cmus: 0001 adds the app IPC socket (android.c/android.h + hook
+- patches/cmus (13; the three upstream-candidate fixes lead the stack so
+  they rebase cleanly and can be pulled straight from Patrick's fork
+  branches, then the Android-only work): 0001 (upstream candidate) fixes
+  op/aaudio's remap
+  buffer size — it must fit the largest write *after* stream negotiation;
+  0002 (upstream candidate, un-gated, from pgaskin/cmus
+  `fix-wavpack-fd-leak`) closes the `.wvc` correction fd in ip/wavpack's
+  open-failure path (it was leaked once per rejected .wv with a sibling
+  .wvc) and clears ip_data->private there; 0003 (upstream candidate,
+  un-gated, from pgaskin/cmus `fix-opus`) makes ip/opus read the fd through
+  its own read/seek/tell/close callbacks instead of op_fdopen(): that
+  fdopen()ed cmus's fd into a FILE that owned it (and, since the first
+  parameter is an *output*, overwrote the plugin's static callbacks with the
+  stdio ones), so when op_open_callbacks() rejected a truncated/empty/
+  mislabelled .opus the FILE leaked and input.c's ip_reset() close()d the fd
+  underneath it — a fatal fdsan ownership violation on Android (one bad
+  .opus aborted the whole process mid-library-scan; on glibc/musl a FILE
+  leak plus an lseek on a recycled fd number at exit). Also fixes the seek
+  callback to opusfile's 0/-1 contract (it returned the new offset, which
+  never mattered while the callbacks were dead code) and makes the table
+  const. 0004 adds the app IPC socket (android.c/android.h + hook
   hunks in ui_curses.c/command_mode.c — including a view event out of
   set_view() — + a player_pos_exact() wrapper in player.c/h reading the
   fractional position under player_lock, since player_info.pos is whole
@@ -88,16 +108,15 @@ full plan and rationale; this file describes what currently exists.
   blocking get_next callback that only the main loop can answer — a
   blocking lock there deadlocked the whole player (stage-16 fix).
   Everything guarded by CONFIG_ANDROID so the patched tree
-  still builds with the upstream Makefile), 0002 removes remote-stream
+  still builds with the upstream Makefile), 0005 removes remote-stream
   support (input.c remote machinery behind `#ifndef CONFIG_ANDROID`,
   cmus_detect_ft's http branch out) so http.c drops from the link,
-  0003 (upstream candidate) fixes op/aaudio's sharing_mode getter,
-  0004 (upstream candidate, un-gated) makes do_cmus_save atomic —
+  0006 (upstream candidate, un-gated) makes do_cmus_save atomic —
   write `<filename>.tmp` + rename like every other state writer
   (lib.pl/queue.pl/playlists were the only in-place O_TRUNC writers),
   with pl_load_all skipping `*.tmp` leftovers and .tmp-suffixed
   playlist names rejected (saving playlist X writes X.tmp, which
-  would clobber a playlist named X.tmp), 0005 (Android-only, gated on
+  would clobber a playlist named X.tmp), 0007 (Android-only, gated on
   CONFIG_STATIC_PLUGINS) links every input/output plugin into the cmus
   binary instead of dlopen()ing them: each plugin's fixed ABI symbols
   (ip_ops/ip_priority/… — identical across plugins) are renamed to
@@ -106,25 +125,25 @@ full plan and rationale; this file describes what currently exists.
   ip_load_plugins/op_load_plugins walk in place of the CMUS_LIB_DIR scan
   (the upstream Makefile leaves the macro unset and keeps the dlopen
   path). The rest are app-hardening/cleanup, all gated on CONFIG_ANDROID so
-  the upstream Makefile is unaffected: 0006 drops the built-in cmus-remote
+  the upstream Makefile is unaffected: 0008 drops the built-in cmus-remote
   socket server (every server_* reference in ui_curses.c behind #ifndef
   CONFIG_ANDROID — the select set, server_init/exit, the --listen flag and
   its default socket path) so server.c leaves the link like http.c did —
-  the app has its own IPC socket; 0007 routes debug output to logcat (tag
+  the app has its own IPC socket; 0009 routes debug output to logcat (tag
   `cmus`): d_print at debug level, gated by a flag debug_init() reads once
   from CMUS_ANDROID_DEBUG_LOG so early logs get through, and _debug_bug at
-  error level always; 0008 pins the file browser's default dir: browser_init()
+  error level always; 0010 pins the file browser's default dir: browser_init()
   reads CMUS_ANDROID_BROWSER_DIR and resume_load() skips restoring the saved
   browser-dir so the app-chosen dir wins every launch (the app sets the music
-  folder, or the storage root when all-files access is granted); 0009 drops
+  folder, or the storage root when all-files access is granted); 0011 drops
   the only spawn() callers — the run/shell commands + their table rows and the
   status_display_program option/invocations — so cmus runs no external
   processes (spawn.c is left pristine for the upstream Makefile but the app
-  build no longer compiles it); 0010 drops CD-audio (no cdio plugin is built,
+  build no longer compiles it); 0012 drops CD-audio (no cdio plugin is built,
   so cdda:// can never play): the FILE_TYPE_CDDA detect branch, the
   cdda_device option, job.c's add_cdda + dispatch, and input.c's cdda open
   path, which removes the last discid.c references so it too leaves the build;
-  0011 makes option_set accept-and-ignore the specific removed option names
+  0013 makes option_set accept-and-ignore the specific removed option names
   (device, status_display_program) so an autosave/rc from an older build
   doesn't error on their stale `set` lines (other unknowns still error). The
   protocol comment atop android.c is the contract the Java client codes
@@ -165,14 +184,14 @@ full plan and rationale; this file describes what currently exists.
   ext-colors, no trace/ticlib/driver); iconv is lib/iconv.c +
   localcharset.c with a handwritten bionic config.h.
 - `native/cmus/`: cmus core (the Makefile's cmus-y set, mpris off, and
-  http.c/server.c/spawn.c/discid.c out — server by 0006, the last two by
-  0009/0010 which strip their callers, + the patch's android.c;
+  http.c/server.c/spawn.c/discid.c out — server by 0008, the last two by
+  0011/0012 which strip their callers, + the patch's android.c;
   `CONFIG_ANDROID` set as a plain compile definition on the core only; links
-  `-llog` for the logcat debug output of patch 0007) as an
+  `-llog` for the logcat debug output of patch 0009) as an
   executable named `libcmus.so`, parked in CMAKE_LIBRARY_OUTPUT_DIRECTORY,
   which AGP packages as-is; the 9 ip plugins (flac vorbis opus mad wavpack
   aac mp4 wav cue) + op/aaudio are compiled straight into that binary
-  (patch 0005 / CONFIG_STATIC_PLUGINS) as per-plugin OBJECT libs whose
+  (patch 0007 / CONFIG_STATIC_PLUGINS) as per-plugin OBJECT libs whose
   fixed ABI symbols are `-D`-renamed to `<name>_ip_ops` etc. to avoid
   collisions, with the codec static libs linked onto the object lib (for
   their header dirs) and onto cmus (for the link) — so there's a single
@@ -200,16 +219,16 @@ full plan and rationale; this file describes what currently exists.
   `nativeLibraryDir/libcmus.so` in a pty (env: HOME/TMPDIR/TERM/
   TERMINFO/CMUS_{HOME,DATA_DIR} pointing into the
   `filesDir/.cmus/` dotfolder (stage 18; CMUS_LIB_DIR dropped with the
-  plugin .so files — patch 0005 builds them into the binary) +
+  plugin .so files — patch 0007 builds them into the binary) +
   `CMUS_ANDROID_SOCKET=<filesDir>/.cmus/android.sock`, the app IPC
   socket — beside home, not in it, so zip exports of the config never
   pick up socket files, + `CMUS_ANDROID_{EXT_FILES,EXT,FILES}`, the
   pl_env base vars — names permanent, most-specific first, + a conditional
   `CMUS_ANDROID_DEBUG_LOG=1` when the debuggable-only debug-logging toggle
-  is on, read once at startup by patch 0007 so a change needs a respawn, +
+  is on, read once at startup by patch 0009 so a change needs a respawn, +
   `CMUS_ANDROID_BROWSER_DIR` = the storage root when the optional all-files
   access (MANAGE_EXTERNAL_STORAGE, granted from settings) is on else the
-  shared Music folder, pinned as the browser default every launch by 0009;
+  shared Music folder, pinned as the browser default every launch by 0010;
   cmus reads these dirs directly — MediaProvider's FUSE mount honors the
   app's READ_MEDIA_AUDIO per-process, so no MediaStore is needed — while
   import still targets only Music),
@@ -626,5 +645,7 @@ full plan and rationale; this file describes what currently exists.
 ## Coming next (see overview stages)
 
 Ogg/opus embedded art (20), polish/verify (21). Upstream submissions
-pending: 0003 (aaudio sharing_mode getter), 0004 (atomic playlist
-saves).
+pending: 0001 (aaudio remap buffer size), 0006 (atomic playlist saves);
+0002/0003 (wavpack .wvc leak, opus callbacks/fdsan) are on Patrick's fork
+as `fix-wavpack-fd-leak` / `fix-opus` — pull from there if they change
+(cherry-pick onto 0001, `git rebase --onto`, `./patch.sh cmus`).

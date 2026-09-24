@@ -3,6 +3,71 @@
 Newest entries first. One entry per work session/stage; enough context to
 pick up where things left off.
 
+## 2026-09-23 — Patches 0002/0003: wavpack fd leak + opus fdsan abort on a bad .opus (built, harness-verified; not yet device-tested)
+
+- **User report:** fdsan crash while adding a large "mostly opus, some mp3"
+  library; died around 2048 tracks in. The count is where the first bad file
+  sat in scan order, not a limit — the abort is per-file and immediate.
+- **Cause (ip/opus.c, upstream code):** `opus_open()` wrapped `ip_data->fd`
+  with `op_fdopen()`, i.e. `fdopen()` → a FILE that owns the fd (fdsan tag
+  `FILE*`). op_fdopen's first parameter is an *output*, so it also overwrote
+  the plugin's static callbacks with opusfile's stdio ones, making cmus's own
+  read/seek/tell/close functions dead code. When `op_open_callbacks()`
+  rejects the stream (truncated / 0-byte / not-really-opus `.opus`; only that
+  extension routes here) the plugin freed `priv` and returned
+  UNSUPPORTED_FILE_TYPE, leaking the FILE; input.c's `ip_reset(ip, 1)` then
+  `close()`d the fd → bionic fdsan "expected to be unowned, actually owned by
+  FILE*" → abort of the whole cmus process. Good files were fine (op_free →
+  fclose closes it under the FILE's ownership). On glibc/musl the same path
+  is a FILE+buffer leak plus an lseek on a recycled fd number at exit
+  (both libcs sync read streams in their exit handlers) — silent, not fatal.
+- **Fix — 0003** (un-gated upstream candidate, Patrick's fork
+  `pgaskin/cmus` branch `fix-opus`): open via
+  `op_open_callbacks(ip_data, &callbacks, …)` on the raw fd like every other
+  plugin. opusfile doesn't call close() on open failure, so the fd stays
+  input.c's and is closed once; on success `op_free()` runs `close_func`
+  (close + fd=-1). The seek callback is fixed to opusfile's contract (0/-1;
+  it returned lseek's offset, and op_seek_helper treats any nonzero return
+  as OP_EREAD — would have broken every seek once the callbacks went live)
+  and the table is `const`. Behavioural delta vs the stdio callbacks,
+  verified against opusfile + bionic/glibc/musl source (clones in
+  ~/srctest/dl): read/seek/tell/close are semantically identical (opusfile
+  only checks the sign of read errors); only sequential-decode buffering
+  changes — opusfile's 2 KiB reads were 2-per-syscall through the 4 KiB
+  st_blksize buffer on bionic/glibc, now 1-per-syscall; musl already
+  readv()s straight into the caller so it's unchanged; the 64 KiB open/seek
+  reads bypassed the buffer everywhere. ~4→8 read syscalls/s at 128 kbps.
+  Nit for the upstream PR: the commit message says "fdclose" where fclose is
+  meant.
+- **Fix — 0002** (un-gated upstream candidate, branch `fix-wavpack-fd-leak`):
+  found auditing every other built plugin for the same class of bug — the
+  only hit, and not fdsan: `wavpack_open()` opened the sibling `.wvc`
+  correction fd before `WavpackOpenFileInputEx()` and leaked it on the
+  failure path. Now closed there; `ip_data->private` also cleared.
+- **Audit result otherwise clean:** flac/wavpack/aac/mp4/wav never close
+  `ip_data->fd` (input.c closes it once); vorbis (ov_clear → close_func), mad
+  (nomad_close → close_func, guarded) and cue close it with a raw close() and
+  set fd=-1 so ip_close skips it; libvorbisfile NULLs datasource before
+  ov_clear on open failure so close_func isn't called; mp4v2 does its own
+  fstream I/O on the filename; aaudio's notify pipe is opened in pcm init and
+  closed once in pcm exit, which output.c only calls when init succeeded. No
+  other fdopen/fopen over a shared fd anywhere in the Android build.
+- **Stack order:** upstream candidates lead — 0001 aaudio, 0002 wavpack,
+  0003 opus — then the Android-only patches, so the former 0002..0011 are
+  now 0004..0013 (IPC=0004 … removed-options=0013). architecture.md's patch
+  paragraph was stale before this (it still numbered IPC as 0001 and
+  described 0001 as a "sharing_mode getter" fix); renumbered end-to-end
+  against the actual files. Entries below keep their historical numbers.
+  Submodule has a fetch-only `pgaskin` remote for pulling the fork branches.
+- **Verified:** `:app:assembleDebug` green, `./patch.sh check` OK. Desktop
+  harness linking the real ip/opus.c against system opusfile 0.12: 8 s
+  ffmpeg-made file decodes fully, seek(5.0)/seek(1.0) leave exactly
+  3.00 s/7.00 s, comments/duration/bitrate read, fd closed once by
+  close_func; garbage and 0-byte `.opus` fail with UNSUPPORTED_FILE_TYPE and
+  leave the fd open for input.c. **Device check still due:** drop a 0-byte
+  `foo.opus` in the music dir and import — must skip it and keep scanning;
+  play + seek a real .opus.
+
 ## 2026-07-22 — Stage 23 Session A: SAF prep tasks (app-only, built)
 
 - Per [plans/23-saf.md](plans/23-saf.md) *Prep tasks* / *Build order →
