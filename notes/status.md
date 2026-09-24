@@ -3,6 +3,38 @@
 Newest entries first. One entry per work session/stage; enough context to
 pick up where things left off.
 
+## 2026-09-24 — Patch 0004: invalid-UTF-8 print-size overflow (cmus/cmus#1520; built, not device-tested)
+
+- **What:** Patrick's "Fix buffer overflow caused by invalid UTF-8" (fork
+  branch `fix-utf8-invalid-overflow`, upstream PR cmus/cmus#1520, fixes
+  cmus/cmus#1448 — `realloc(): invalid next size` abort right after the
+  window outline is drawn on Debian 2.12.0) pulled in after 0003 as an
+  un-gated upstream candidate. Former 0004..0013 are now 0005..0014.
+- **Bug (uchar.c, upstream code):** `u_print_size()` returned
+  `u_char_size()` for everything except control chars 0x01..0x1e, but
+  `u_set_char()` prints 0x1f and any uchar above 0x10ffff as a 4-byte
+  `<XX>`. The latter is the common case: `u_get_char()` returns
+  `byte | U_INVALID_MASK` (0x100000xx) for every byte that isn't valid
+  UTF-8, and u_char_size() sizes that at 1, so each bad byte was
+  under-counted by 3. `u_str_print_size()` sums it and is the sole sizer
+  for `gbuf_add_ustr()` (format_print → every formatted UI line; heap
+  overflow → the realloc abort in #1448), the mpris.c VLAs, and our
+  `android_json_str()` VLA in android.c (0005, the IPC track-info JSON,
+  copied from the mpris pattern) — so a non-UTF-8 tag or filename could
+  smash the stack in the app IPC path on Android too.
+- **Fix:** u_print_size returns 4 exactly when u_set_char takes its `<XX>`
+  path (`(uch <= 0x1f && uch != 0) || uch > 0x10ffff`), else u_char_size.
+  Commit message checked against u_set_char/u_get_char/u_char_size:
+  accurate.
+- **Stack:** cherry-picked the PR commit onto 0003, `git rebase --onto` the
+  ten Android patches (clean), `./patch.sh cmus`; architecture.md's patch
+  paragraph and "coming next" renumbered. Entries below keep their
+  historical numbers.
+- **Verified:** `:app:assembleDebug` green, `./patch.sh check` OK.
+  **Device check due:** import a file with a non-UTF-8 filename or tag
+  (e.g. `é` as the single byte 0xe9); the track list must show `<E9>` and
+  the app's now-playing must update without a crash.
+
 ## 2026-09-23 — Patches 0002/0003: wavpack fd leak + opus fdsan abort on a bad .opus (built, harness-verified; not yet device-tested)
 
 - **User report:** fdsan crash while adding a large "mostly opus, some mp3"

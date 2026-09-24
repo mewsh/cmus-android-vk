@@ -1,7 +1,7 @@
 From 335531e51e6db6c43e575aa789f24ebc667b796f Mon Sep 17 00:00:00 2001
 From: Patrick Gaskin <patrick@pgaskin.net>
 Date: Wed, 23 Sep 2026 23:25:43 -0400
-Subject: [PATCH 03/13] ip/opus: fix opusfile callbacks and fdsan abort on
+Subject: [PATCH 03/14] ip/opus: fix opusfile callbacks and fdsan abort on
  invalid files
 
 Previously, op_fdopen would overwrite our callbacks with the opusfile
