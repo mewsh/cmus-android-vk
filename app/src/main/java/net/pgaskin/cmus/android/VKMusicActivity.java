@@ -25,7 +25,11 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -38,12 +42,17 @@ import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.crypto.Cipher;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
 public class VKMusicActivity extends Activity {
     private static final String TAG = "VKMusic";
     private static final String PREFS = "vk_music";
     private static final String KEY_TOKEN = "access_token";
     private static final Pattern TOK_RE = Pattern.compile("vk1\\.a\\.[A-Za-z0-9_\\-\\.]{60,}");
     private static final String UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    private static final String REFERER = "https://vk.com/";
 
     private CmusService service;
     private CmusIpc ipc;
@@ -268,32 +277,39 @@ public class VKMusicActivity extends Activity {
                 String url = audio.url;
                 if (url == null || url.isEmpty()) {
                     VKApi.ApiResult<String> r = VKApi.getAudioUrl(token, audio.ownerId, audio.id);
-                    if (r.error != null) {
-                        uiSetStatus("Ошибка URL: " + r.error);
-                        return;
-                    }
+                    if (r.error != null) { uiSetStatus("Ошибка URL: " + r.error); return; }
                     url = r.data;
                 }
                 if (url == null || url.isEmpty()) { uiSetStatus("URL пустой"); return; }
 
                 File cacheDir = new File(getCacheDir(), "vk");
                 if (!cacheDir.exists()) cacheDir.mkdirs();
-                final File out = new File(cacheDir, "vk_" + audio.ownerId + "_" + audio.id + ".mp3");
+                final String base = "vk_" + audio.ownerId + "_" + audio.id;
+                File mp3 = new File(cacheDir, base + ".mp3");
+                File ts = new File(cacheDir, base + ".ts");
 
-                if (!out.exists() || out.length() == 0) {
+                File playFile;
+                if (ts.exists() && ts.length() > 10000) {
+                    playFile = ts;
+                } else if (mp3.exists() && mp3.length() > 10000) {
+                    playFile = mp3;
+                } else {
+                    if (mp3.exists()) mp3.delete();
+                    if (ts.exists()) ts.delete();
                     uiSetStatus("Скачиваю: " + audio.displayName());
-                    download(url, out);
+                    playFile = downloadAndPrepare(url, cacheDir, base);
                 }
-
-                if (out.length() == 0) { uiSetStatus("Файл пустой после скачивания"); return; }
-
-                final String path = out.getAbsolutePath();
+                if (playFile == null || !playFile.exists() || playFile.length() < 4096) {
+                    uiSetStatus("Файл не готов"); return;
+                }
+                final String path = playFile.getAbsolutePath();
+                final String display = audio.displayName();
                 runOnUiThread(() -> {
                     ipc.send("view 1");
                     ipc.send("add " + path);
                     ipc.send("view queue");
                     ipc.send("player-play");
-                    statusText.setText("Играю: " + audio.displayName());
+                    statusText.setText("Играю: " + display);
                 });
             } catch (Exception e) {
                 Log.e(TAG, "playTrack failed", e);
@@ -302,39 +318,145 @@ public class VKMusicActivity extends Activity {
         });
     }
 
-    private void download(String urlStr, File out) throws Exception {
+    /**
+     * Скачивает URL. Если VK вернул HLS-манифест (#EXTM3U) — скачиваем все
+     * сегменты, расшифровываем AES-128 и склеиваем в один .ts-файл.
+     * Иначе — сохраняем как .mp3.
+     * Возвращает готовый файл (.mp3 или .ts).
+     */
+    private File downloadAndPrepare(String urlStr, File cacheDir, String base) throws Exception {
+        byte[] head = httpGetBytes(urlStr, true);
+        String headStr = new String(head, "UTF-8");
+        if (headStr.startsWith("#EXTM3U")) {
+            File out = new File(cacheDir, base + ".ts");
+            downloadHlsFromManifest(urlStr, headStr, out);
+            return out;
+        } else {
+            File out = new File(cacheDir, base + ".mp3");
+            // head содержит уже скачанное
+            try (FileOutputStream fos = new FileOutputStream(out)) {
+                fos.write(head);
+            }
+            if (out.length() < 4096) {
+                String preview = new String(head, 0, Math.min(head.length, 300), "UTF-8").replaceAll("\\s+", " ");
+                throw new Exception("Мало (" + out.length() + "b): " + preview);
+            }
+            return out;
+        }
+    }
+
+    private void downloadHlsFromManifest(String baseUrl, String manifest, File out) throws Exception {
+        // Если это master-плейлист со ссылкой на media-плейлист — спускаемся
+        if (manifest.contains("#EXT-X-STREAM-INF")) {
+            String media = null;
+            String[] lines = manifest.split("\n");
+            for (int i = 0; i < lines.length && media == null; i++) {
+                if (lines[i].trim().startsWith("#EXT-X-STREAM-INF")) {
+                    for (int j = i + 1; j < lines.length; j++) {
+                        String l = lines[j].trim();
+                        if (!l.isEmpty() && !l.startsWith("#")) { media = l; break; }
+                    }
+                }
+            }
+            if (media == null) throw new Exception("Master без media-плейлиста");
+            String mediaUrl = new URL(new URL(baseUrl), media).toString();
+            manifest = new String(httpGetBytes(mediaUrl, false), "UTF-8");
+            baseUrl = mediaUrl;
+        }
+
+        Pattern keyRe = Pattern.compile("URI=\"([^\"]+)\"");
+        Pattern ivRe = Pattern.compile("IV=0x([0-9A-Fa-f]+)");
+
+        byte[] key = null;
+        byte[] ivFixed = null;
+        int mediaSeq = 0;
+        List<String> segs = new ArrayList<>();
+
+        for (String raw : manifest.split("\n")) {
+            String line = raw.trim();
+            if (line.isEmpty()) continue;
+            if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
+                mediaSeq = Integer.parseInt(line.substring(22).trim());
+            } else if (line.startsWith("#EXT-X-KEY:")) {
+                Matcher km = keyRe.matcher(line);
+                if (km.find()) {
+                    key = httpGetBytes(km.group(1), false);
+                    if (key.length != 16) throw new Exception("Ключ длиной " + key.length);
+                }
+                Matcher im = ivRe.matcher(line);
+                if (im.find()) ivFixed = hexToBytes(im.group(1));
+            } else if (!line.startsWith("#")) {
+                segs.add(line);
+            }
+        }
+        if (segs.isEmpty()) throw new Exception("Сегментов нет");
+
+        uiSetStatus("HLS: сегментов " + segs.size() + ", качаю...");
+
+        try (FileOutputStream fos = new FileOutputStream(out)) {
+            int seq = mediaSeq;
+            for (int i = 0; i < segs.size(); i++) {
+                String segUrl = new URL(new URL(baseUrl), segs.get(i)).toString();
+                byte[] data = httpGetBytes(segUrl, false);
+                if (key != null) {
+                    byte[] iv;
+                    if (ivFixed != null) {
+                        iv = ivFixed;
+                    } else {
+                        iv = new byte[16];
+                        iv[12] = (byte) ((seq >> 24) & 0xff);
+                        iv[13] = (byte) ((seq >> 16) & 0xff);
+                        iv[14] = (byte) ((seq >> 8) & 0xff);
+                        iv[15] = (byte) (seq & 0xff);
+                    }
+                    data = aes128CbcDecrypt(data, key, iv);
+                }
+                fos.write(data);
+                seq++;
+                if ((i & 3) == 0) uiSetStatus("HLS: " + (i + 1) + "/" + segs.size());
+            }
+        }
+        if (out.length() < 10000) throw new Exception("Склеено мало: " + out.length());
+        Log.i(TAG, "HLS done: " + out.length() + " bytes");
+    }
+
+    private byte[] aes128CbcDecrypt(byte[] data, byte[] key, byte[] iv) throws Exception {
+        int len = data.length - (data.length % 16);
+        if (len <= 0) return new byte[0];
+        Cipher c = Cipher.getInstance("AES/CBC/NoPadding");
+        c.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
+        return c.doFinal(data, 0, len);
+    }
+
+    private byte[] hexToBytes(String hex) {
+        int n = hex.length() / 2;
+        byte[] out = new byte[n];
+        for (int i = 0; i < n; i++) {
+            out[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+        }
+        return out;
+    }
+
+    private byte[] httpGetBytes(String urlStr, boolean peek) throws Exception {
         URL url = new URL(urlStr);
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
         c.setRequestMethod("GET");
         c.setRequestProperty("User-Agent", UA);
-        c.setRequestProperty("Referer", "https://vk.com/");
-        c.setRequestProperty("Accept", "audio/*,*/*;q=0.1");
+        c.setRequestProperty("Referer", REFERER);
+        c.setRequestProperty("Accept", "*/*");
         c.setConnectTimeout(15000);
         c.setReadTimeout(60000);
         c.setInstanceFollowRedirects(true);
 
         int code = c.getResponseCode();
-        String ctype = c.getContentType();
-        String finalUrl = c.getURL().toString();
-        Log.i(TAG, "download code=" + code + " ctype=" + ctype + " -> " + finalUrl);
-        if (code < 200 || code >= 300) throw new Exception("HTTP " + code + " (" + ctype + ")");
+        if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
 
         try (InputStream in = c.getInputStream();
-             FileOutputStream fos = new FileOutputStream(out)) {
+             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
             byte[] buf = new byte[32768];
             int n;
-            while ((n = in.read(buf)) > 0) fos.write(buf, 0, n);
-        }
-
-        long len = out.length();
-        if (len < 4096) {
-            byte[] head = new byte[(int) Math.min(len, 300)];
-            try (java.io.FileInputStream fis = new java.io.FileInputStream(out)) {
-                int rd = fis.read(head);
-                if (rd < 0) rd = 0;
-            }
-            String preview = new String(head, "UTF-8").replaceAll("\\s+", " ");
-            throw new Exception("Мало (" + len + "b, ctype=" + ctype + "): " + preview);
+            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+            return bos.toByteArray();
         }
     }
 
