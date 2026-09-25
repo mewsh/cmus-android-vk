@@ -289,6 +289,7 @@ public class VKMusicActivity extends Activity {
 
                 final String path = out.getAbsolutePath();
                 runOnUiThread(() -> {
+                    ipc.send("view 1");
                     ipc.send("add " + path);
                     ipc.send("view queue");
                     ipc.send("player-play");
@@ -307,29 +308,33 @@ public class VKMusicActivity extends Activity {
         c.setRequestMethod("GET");
         c.setRequestProperty("User-Agent", UA);
         c.setRequestProperty("Referer", "https://vk.com/");
-        c.setRequestProperty("Accept", "*/*");
+        c.setRequestProperty("Accept", "audio/*,*/*;q=0.1");
         c.setConnectTimeout(15000);
         c.setReadTimeout(60000);
         c.setInstanceFollowRedirects(true);
 
         int code = c.getResponseCode();
-        if (code < 200 || code >= 300) {
-            throw new Exception("HTTP " + code);
-        }
+        String ctype = c.getContentType();
+        String finalUrl = c.getURL().toString();
+        Log.i(TAG, "download code=" + code + " ctype=" + ctype + " -> " + finalUrl);
+        if (code < 200 || code >= 300) throw new Exception("HTTP " + code + " (" + ctype + ")");
 
         try (InputStream in = c.getInputStream();
              FileOutputStream fos = new FileOutputStream(out)) {
             byte[] buf = new byte[32768];
-            int n; long total = 0;
-            while ((n = in.read(buf)) > 0) {
-                fos.write(buf, 0, n);
-                total += n;
-            }
-            Log.i(TAG, "downloaded " + total + " bytes to " + out);
+            int n;
+            while ((n = in.read(buf)) > 0) fos.write(buf, 0, n);
         }
 
-        if (out.length() < 4096) {
-            throw new Exception("Слишком мало данных (" + out.length() + " байт)");
+        long len = out.length();
+        if (len < 4096) {
+            byte[] head = new byte[(int) Math.min(len, 300)];
+            try (java.io.FileInputStream fis = new java.io.FileInputStream(out)) {
+                int rd = fis.read(head);
+                if (rd < 0) rd = 0;
+            }
+            String preview = new String(head, "UTF-8").replaceAll("\\s+", " ");
+            throw new Exception("Мало (" + len + "b, ctype=" + ctype + "): " + preview);
         }
     }
 
