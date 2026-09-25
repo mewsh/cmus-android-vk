@@ -3,13 +3,19 @@ package net.pgaskin.cmus.android;
 import android.util.Log;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 public class VKApi {
     private static final String TAG = "VKApi";
+    private static final String API_VERSION = "5.131";
+    private static final String UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
     public static class Audio {
         public int id;
@@ -29,48 +35,45 @@ public class VKApi {
         public String error;
     }
 
-    /**
-     * Получает список аудиозаписей пользователя.
-     */
-    public static ApiResult<List<Audio>> getAudio(VKWebClient client, int count, int offset) {
+    public static ApiResult<List<Audio>> getAudio(String token, int count, int offset) {
         ApiResult<List<Audio>> result = new ApiResult<>();
         try {
-            // Формируем URL для вызова внутреннего метода VK.
-            // Обратите внимание: этот метод может отличаться от публичного API.
-            // Мы используем формат, который применяется в веб-версии.
-            String url = "https://vk.com/audio?act=get_audio&al=1&owner_id=0"
-                    + "&offset=" + offset
-                    + "&count=" + count;
-
-            JSONObject json = client.get(url);
+            String url = "https://api.vk.com/method/audio.get"
+                    + "?access_token=" + URLEncoder.encode(token, "UTF-8")
+                    + "&v=" + API_VERSION
+                    + "&count=" + count
+                    + "&offset=" + offset;
+            JSONObject json = httpGet(url);
             if (json.has("error")) {
-                result.error = json.getJSONObject("error").getString("error_msg");
+                result.error = json.getJSONObject("error").optString("error_msg", "unknown");
                 return result;
             }
-
-            // Структура ответа может отличаться от публичного API.
-            // Здесь мы предполагаем, что ответ содержит массив "response" или "audios".
+            if (!json.has("response")) {
+                result.error = "Нет response: " + json.toString();
+                return result;
+            }
+            Object respObj = json.get("response");
             JSONArray items;
-            if (json.has("response")) {
-                items = json.getJSONArray("response");
-            } else if (json.has("audios")) {
-                items = json.getJSONArray("audios");
+            if (respObj instanceof JSONObject) {
+                items = ((JSONObject) respObj).optJSONArray("items");
+            } else if (respObj instanceof JSONArray) {
+                items = (JSONArray) respObj;
             } else {
-                result.error = "Неизвестный формат ответа";
-                return result;
+                items = null;
             }
-
             List<Audio> audios = new ArrayList<>();
-            for (int i = 0; i < items.length(); i++) {
-                JSONObject item = items.getJSONObject(i);
-                Audio audio = new Audio();
-                audio.id = item.getInt("id");
-                audio.ownerId = item.getInt("owner_id");
-                audio.artist = item.optString("artist", "Unknown");
-                audio.title = item.optString("title", "Unknown");
-                audio.duration = item.optInt("duration", 0);
-                audio.url = item.optString("url", "");
-                audios.add(audio);
+            if (items != null) {
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject it = items.getJSONObject(i);
+                    Audio a = new Audio();
+                    a.id = it.optInt("id");
+                    a.ownerId = it.optInt("owner_id");
+                    a.artist = it.optString("artist", "Unknown");
+                    a.title = it.optString("title", "Unknown");
+                    a.duration = it.optInt("duration", 0);
+                    a.url = it.optString("url", "");
+                    audios.add(a);
+                }
             }
             result.data = audios;
             return result;
@@ -81,42 +84,49 @@ public class VKApi {
         }
     }
 
-    /**
-     * Получает прямую ссылку на трек, если её не было в списке.
-     */
-    public static ApiResult<String> getAudioUrl(VKWebClient client, int ownerId, int audioId) {
+    public static ApiResult<String> getAudioUrl(String token, int ownerId, int audioId) {
         ApiResult<String> result = new ApiResult<>();
         try {
-            String url = "https://vk.com/audio?act=get_audio&al=1&owner_id=0"
-                    + "&audio_id=" + ownerId + "_" + audioId;
-
-            JSONObject json = client.get(url);
+            String url = "https://api.vk.com/method/audio.getById"
+                    + "?access_token=" + URLEncoder.encode(token, "UTF-8")
+                    + "&v=" + API_VERSION
+                    + "&audios=" + ownerId + "_" + audioId;
+            JSONObject json = httpGet(url);
             if (json.has("error")) {
-                result.error = json.getJSONObject("error").getString("error_msg");
+                result.error = json.getJSONObject("error").optString("error_msg", "unknown");
                 return result;
             }
-
-            // Пытаемся извлечь URL из разных возможных мест
-            String audioUrl = null;
-            if (json.has("url")) {
-                audioUrl = json.getString("url");
-            } else if (json.has("response")) {
-                JSONObject resp = json.getJSONObject("response");
-                if (resp.has("url")) {
-                    audioUrl = resp.getString("url");
-                }
-            }
-
-            if (audioUrl == null || audioUrl.isEmpty()) {
-                result.error = "URL не найден в ответе";
+            JSONArray arr = json.optJSONArray("response");
+            if (arr == null || arr.length() == 0) {
+                result.error = "Пустой ответ";
                 return result;
             }
-            result.data = audioUrl;
+            String u = arr.getJSONObject(0).optString("url", "");
+            if (u.isEmpty()) { result.error = "URL пустой"; return result; }
+            result.data = u;
             return result;
         } catch (Exception e) {
             Log.e(TAG, "getAudioUrl failed", e);
             result.error = e.getMessage();
             return result;
         }
+    }
+
+    private static JSONObject httpGet(String urlStr) throws Exception {
+        URL url = new URL(urlStr);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty("User-Agent", UA);
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(15000);
+        int code = conn.getResponseCode();
+        InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
+        if (is == null) throw new Exception("HTTP " + code + ": пустой ответ");
+        BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = br.readLine()) != null) sb.append(line);
+        br.close();
+        return new JSONObject(sb.toString());
     }
 }
