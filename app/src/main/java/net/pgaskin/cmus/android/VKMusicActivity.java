@@ -6,7 +6,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -26,6 +25,11 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +43,7 @@ public class VKMusicActivity extends Activity {
     private static final String PREFS = "vk_music";
     private static final String KEY_TOKEN = "access_token";
     private static final Pattern TOK_RE = Pattern.compile("vk1\\.a\\.[A-Za-z0-9_\\-\\.]{60,}");
+    private static final String UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
     private CmusService service;
     private CmusIpc ipc;
@@ -81,14 +86,33 @@ public class VKMusicActivity extends Activity {
         statusText.setText("Инициализация...");
         root.addView(statusText);
 
+        LinearLayout btns = new LinearLayout(this);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+
         Button logoutBtn = new Button(this);
-        logoutBtn.setText("Сбросить / сменить аккаунт");
+        logoutBtn.setText("Сбросить");
         logoutBtn.setOnClickListener(v -> {
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(KEY_TOKEN).apply();
             token = null;
             recreate();
         });
-        root.addView(logoutBtn);
+        btns.addView(logoutBtn);
+
+        Button clearBtn = new Button(this);
+        clearBtn.setText("Очистить кэш");
+        clearBtn.setOnClickListener(v -> {
+            executor.execute(() -> {
+                File dir = new File(getCacheDir(), "vk");
+                File[] files = dir.listFiles();
+                int n = 0;
+                if (files != null) for (File f : files) if (f.delete()) n++;
+                final int nn = n;
+                runOnUiThread(() -> Toast.makeText(this, "Удалено: " + nn, Toast.LENGTH_SHORT).show());
+            });
+        });
+        btns.addView(clearBtn);
+
+        root.addView(btns);
 
         content = new FrameLayout(this);
         root.addView(content, new LinearLayout.LayoutParams(
@@ -118,14 +142,14 @@ public class VKMusicActivity extends Activity {
 
     private void showLogin() {
         content.removeAllViews();
-        statusText.setText("Залогинься. Жду токен (может занять до 30 сек)...");
+        statusText.setText("Залогинься. Жду токен...");
 
         webView = new WebView(this);
         WebSettings ws = webView.getSettings();
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);
         ws.setDatabaseEnabled(true);
-        ws.setUserAgentString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        ws.setUserAgentString(UA);
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
@@ -163,38 +187,28 @@ public class VKMusicActivity extends Activity {
 
     private final Runnable pollOnce = new Runnable() {
         @Override public void run() {
-            if (token != null) return;
-            if (webView == null) return;
+            if (token != null || webView == null) return;
             if (pollCount >= POLL_MAX) {
-                statusText.setText("Токен не найден за " + (POLL_MAX * POLL_INTERVAL_MS / 1000) + " сек. Попробуй нажать play на треке.");
+                statusText.setText("Токен не найден. Тапни play на треке.");
                 return;
             }
             pollCount++;
             String js = "(function(){try{" +
-                    "function find(o,d){" +
-                    "  if(d>6||!o||typeof o!=='object')return '';" +
-                    "  var ks;try{ks=Object.keys(o);}catch(e){return '';}" +
-                    "  for(var i=0;i<ks.length;i++){" +
-                    "    var v;try{v=o[ks[i]];}catch(e){continue;}" +
-                    "    if(typeof v==='string'&&v.indexOf('vk1.a.')===0&&v.length>60)return v;" +
-                    "    if(typeof v==='object'&&v!==null){var r=find(v,d+1);if(r)return r;}" +
-                    "  } return '';" +
-                    "}" +
+                    "function find(o,d){if(d>6||!o||typeof o!=='object')return '';" +
+                    "var ks;try{ks=Object.keys(o);}catch(e){return '';}" +
+                    "for(var i=0;i<ks.length;i++){var v;try{v=o[ks[i]];}catch(e){continue;}" +
+                    "if(typeof v==='string'&&v.indexOf('vk1.a.')===0&&v.length>60)return v;" +
+                    "if(typeof v==='object'&&v!==null){var r=find(v,d+1);if(r)return r;}}return '';}" +
                     "if(window.vk){var a=find(window.vk,0);if(a)return a;}" +
                     "try{for(var i=0;i<localStorage.length;i++){" +
-                    "  var v=localStorage.getItem(localStorage.key(i))||'';" +
-                    "  var m=v.match(/vk1\\.a\\.[A-Za-z0-9_\\-\\.]{60,}/);if(m)return m[0];" +
-                    "}}catch(e){}" +
-                    "return '';" +
-                    "}catch(e){return '';}})()";
+                    "var v=localStorage.getItem(localStorage.key(i))||'';" +
+                    "var m=v.match(/vk1\\.a\\.[A-Za-z0-9_\\-\\.]{60,}/);if(m)return m[0];}}catch(e){}" +
+                    "return '';}catch(e){return '';}})()";
             webView.evaluateJavascript(js, value -> {
                 if (token != null) return;
                 if (value == null) { pollHandler.postDelayed(pollOnce, POLL_INTERVAL_MS); return; }
                 String t = value.replace("\"", "").trim();
-                if (t.startsWith("vk1.a.") && t.length() > 60) {
-                    captureFromString(t, "poll#" + pollCount);
-                    return;
-                }
+                if (t.startsWith("vk1.a.") && t.length() > 60) { captureFromString(t, "poll#" + pollCount); return; }
                 statusText.setText("Ищу токен... (" + pollCount + "/" + POLL_MAX + ")");
                 pollHandler.postDelayed(pollOnce, POLL_INTERVAL_MS);
             });
@@ -210,10 +224,7 @@ public class VKMusicActivity extends Activity {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_TOKEN, t).apply();
         token = t;
         pollHandler.removeCallbacksAndMessages(null);
-        runOnUiThread(() -> {
-            showTrackList();
-            loadTracks();
-        });
+        runOnUiThread(() -> { showTrackList(); loadTracks(); });
     }
 
     private void showTrackList() {
@@ -241,7 +252,7 @@ public class VKMusicActivity extends Activity {
                     adapter.clear();
                     for (VKApi.Audio a : tracks) adapter.add(a.displayName());
                 }
-                statusText.setText("Треков: " + tracks.size());
+                statusText.setText("Треков: " + tracks.size() + " (тапни для игры)");
             });
         });
     }
@@ -251,24 +262,78 @@ public class VKMusicActivity extends Activity {
             Toast.makeText(this, "cmus не подключён", Toast.LENGTH_SHORT).show();
             return;
         }
-        statusText.setText("Играю: " + audio.displayName());
+        statusText.setText("Готовлю: " + audio.displayName());
         executor.execute(() -> {
-            String url = audio.url;
-            if (url == null || url.isEmpty()) {
-                VKApi.ApiResult<String> r = VKApi.getAudioUrl(token, audio.ownerId, audio.id);
-                if (r.error != null) {
-                    runOnUiThread(() -> statusText.setText("Ошибка URL: " + r.error));
-                    return;
+            try {
+                String url = audio.url;
+                if (url == null || url.isEmpty()) {
+                    VKApi.ApiResult<String> r = VKApi.getAudioUrl(token, audio.ownerId, audio.id);
+                    if (r.error != null) {
+                        uiSetStatus("Ошибка URL: " + r.error);
+                        return;
+                    }
+                    url = r.data;
                 }
-                url = r.data;
+                if (url == null || url.isEmpty()) { uiSetStatus("URL пустой"); return; }
+
+                File cacheDir = new File(getCacheDir(), "vk");
+                if (!cacheDir.exists()) cacheDir.mkdirs();
+                final File out = new File(cacheDir, "vk_" + audio.ownerId + "_" + audio.id + ".mp3");
+
+                if (!out.exists() || out.length() == 0) {
+                    uiSetStatus("Скачиваю: " + audio.displayName());
+                    download(url, out);
+                }
+
+                if (out.length() == 0) { uiSetStatus("Файл пустой после скачивания"); return; }
+
+                final String path = out.getAbsolutePath();
+                runOnUiThread(() -> {
+                    ipc.send("add " + path);
+                    ipc.send("view queue");
+                    ipc.send("player-play");
+                    statusText.setText("Играю: " + audio.displayName());
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "playTrack failed", e);
+                uiSetStatus("Ошибка: " + e.getMessage());
             }
-            final String finalUrl = url;
-            runOnUiThread(() -> {
-                ipc.send("add " + finalUrl);
-                ipc.send("view queue");
-                ipc.send("player-play");
-                Toast.makeText(this, "Добавлено в cmus", Toast.LENGTH_SHORT).show();
-            });
         });
+    }
+
+    private void download(String urlStr, File out) throws Exception {
+        URL url = new URL(urlStr);
+        HttpURLConnection c = (HttpURLConnection) url.openConnection();
+        c.setRequestMethod("GET");
+        c.setRequestProperty("User-Agent", UA);
+        c.setRequestProperty("Referer", "https://vk.com/");
+        c.setRequestProperty("Accept", "*/*");
+        c.setConnectTimeout(15000);
+        c.setReadTimeout(60000);
+        c.setInstanceFollowRedirects(true);
+
+        int code = c.getResponseCode();
+        if (code < 200 || code >= 300) {
+            throw new Exception("HTTP " + code);
+        }
+
+        try (InputStream in = c.getInputStream();
+             FileOutputStream fos = new FileOutputStream(out)) {
+            byte[] buf = new byte[32768];
+            int n; long total = 0;
+            while ((n = in.read(buf)) > 0) {
+                fos.write(buf, 0, n);
+                total += n;
+            }
+            Log.i(TAG, "downloaded " + total + " bytes to " + out);
+        }
+
+        if (out.length() < 4096) {
+            throw new Exception("Слишком мало данных (" + out.length() + " байт)");
+        }
+    }
+
+    private void uiSetStatus(String s) {
+        runOnUiThread(() -> statusText.setText(s));
     }
 }
