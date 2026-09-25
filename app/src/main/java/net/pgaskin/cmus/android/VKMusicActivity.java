@@ -469,11 +469,36 @@ public class VKMusicActivity extends Activity {
 
     /**
      * Распаковка MPEG-TS -> MP3 (без перекодирования).
-     * TS-пакеты по 188 байт, sync 0x47. Внутри PES-пакеты с MP3-потоком.
-     * Из каждого TS-пакета берём payload, а на границе PES-пакета
-     * отрезаем PES-заголовок и пишем чистые MP3-кадры.
+     * Проход 1: считаем все PID и объём payload.
+     * Проход 2: берём только самый крупный PID, собираем его PES-поток,
+     * удаляем PES-заголовки, получаем чистые MP3-кадры.
      */
     private void tsToMp3(File tsFile, File mp3File) throws Exception {
+        // --- проход 1: статистика PID ---
+        int[] pidBytes = new int[8192];
+        try (FileInputStream in = new FileInputStream(tsFile)) {
+            byte[] pkt = new byte[188];
+            int n;
+            while ((n = in.read(pkt)) == 188) {
+                if (pkt[0] != 0x47) continue;
+                int pid = ((pkt[1] & 0x1F) << 8) | (pkt[2] & 0xFF);
+                pidBytes[pid] += 188;
+            }
+        }
+        int topPid = -1, topBytes = 0;
+        StringBuilder pidLog = new StringBuilder();
+        for (int i = 0; i < pidBytes.length; i++) {
+            if (pidBytes[i] > 0) {
+                pidLog.append("pid ").append(i).append("=").append(pidBytes[i]).append(" ");
+                if (pidBytes[i] > topBytes) { topBytes = pidBytes[i]; topPid = i; }
+            }
+        }
+        Log.i(TAG, "pid stats: " + pidLog);
+        if (topPid < 0) throw new Exception("TS пустой");
+        Log.i(TAG, "top pid=" + topPid + " bytes=" + topBytes);
+
+        // --- проход 2: извлекаем поток topPid ---
+        int pusiCount = 0, packets = 0;
         try (FileInputStream in = new FileInputStream(tsFile);
              FileOutputStream out = new FileOutputStream(mp3File)) {
             byte[] pkt = new byte[188];
@@ -481,33 +506,48 @@ public class VKMusicActivity extends Activity {
             int n;
             while ((n = in.read(pkt)) == 188) {
                 if (pkt[0] != 0x47) continue;
+                int pid = ((pkt[1] & 0x1F) << 8) | (pkt[2] & 0xFF);
+                if (pid != topPid) continue;
+                packets++;
                 boolean startUnit = (pkt[1] & 0x40) != 0;
                 int afc = (pkt[3] >> 4) & 0x03;
-                if (afc == 0 || afc == 2) continue;
+                if (afc == 0) continue;
                 int payloadStart = 4;
+                if (afc == 2) {
+                    // adaptation без payload
+                    continue;
+                }
                 if (afc == 3) {
                     int afLen = pkt[4] & 0xFF;
                     payloadStart = 5 + afLen;
                 }
                 if (payloadStart >= 188) continue;
 
-                if (startUnit && pesBuf.size() > 0) {
-                    flushPesToMp3(pesBuf.toByteArray(), out);
-                    pesBuf.reset();
+                if (startUnit) {
+                    pusiCount++;
+                    if (pesBuf.size() > 0) {
+                        flushPesToMp3(pesBuf.toByteArray(), out);
+                        pesBuf.reset();
+                    }
                 }
                 pesBuf.write(pkt, payloadStart, 188 - payloadStart);
             }
             if (pesBuf.size() > 0) flushPesToMp3(pesBuf.toByteArray(), out);
         }
-        Log.i(TAG, "tsToMp3: out=" + mp3File.length());
-        if (mp3File.length() < 10000) throw new Exception("MP3 мало: " + mp3File.length());
+        Log.i(TAG, "tsToMp3: pid=" + topPid + " packets=" + packets + " pusi=" + pusiCount + " out=" + mp3File.length());
+        if (mp3File.length() < 10000) throw new Exception("MP3 мало: " + mp3File.length() + " pusi=" + pusiCount);
     }
 
     private void flushPesToMp3(byte[] pes, FileOutputStream out) throws Exception {
         if (pes.length < 9) return;
-        if (!(pes[0] == 0 && pes[1] == 0 && pes[2] == 1)) return;
+        if (!(pes[0] == 0 && pes[1] == 0 && pes[2] == 1)) {
+            // нет PES-заголовка — просто пишем всё (сырые MP3-кадры)
+            out.write(pes);
+            return;
+        }
         int sid = pes[3] & 0xFF;
-        if (sid < 0xC0 || sid > 0xDF) return;
+        // audio (0xC0-0xDF) или private_stream_1 (0xBD)
+        if (!((sid >= 0xC0 && sid <= 0xDF) || sid == 0xBD)) return;
         int headerLen = pes[8] & 0xFF;
         int off = 9 + headerLen;
         if (off >= pes.length) return;
