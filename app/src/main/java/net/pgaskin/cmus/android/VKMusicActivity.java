@@ -286,18 +286,31 @@ public class VKMusicActivity extends Activity {
                 if (!cacheDir.exists()) cacheDir.mkdirs();
                 final String base = "vk_" + audio.ownerId + "_" + audio.id;
                 File mp3 = new File(cacheDir, base + ".mp3");
-                File ts = new File(cacheDir, base + ".ts");
+                File ts  = new File(cacheDir, base + ".ts");
+                File aac = new File(cacheDir, base + ".aac");
 
                 File playFile;
-                if (ts.exists() && ts.length() > 10000) {
-                    playFile = ts;
+                if (aac.exists() && aac.length() > 10000) {
+                    playFile = aac;
+                } else if (ts.exists() && ts.length() > 10000) {
+                    uiSetStatus("Распаковываю .ts -> .aac...");
+                    tsToAac(ts, aac);
+                    playFile = (aac.exists() && aac.length() > 10000) ? aac : ts;
                 } else if (mp3.exists() && mp3.length() > 10000) {
                     playFile = mp3;
                 } else {
                     if (mp3.exists()) mp3.delete();
                     if (ts.exists()) ts.delete();
+                    if (aac.exists()) aac.delete();
                     uiSetStatus("Скачиваю: " + audio.displayName());
-                    playFile = downloadAndPrepare(url, cacheDir, base);
+                    File dl = downloadAndPrepare(url, cacheDir, base);
+                    if (dl.getName().endsWith(".ts")) {
+                        uiSetStatus("Распаковываю .ts -> .aac...");
+                        tsToAac(dl, aac);
+                        playFile = (aac.exists() && aac.length() > 10000) ? aac : dl;
+                    } else {
+                        playFile = dl;
+                    }
                 }
                 if (playFile == null || !playFile.exists() || playFile.length() < 4096) {
                     uiSetStatus("Файл не готов"); return;
@@ -458,6 +471,52 @@ public class VKMusicActivity extends Activity {
             while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
             return bos.toByteArray();
         }
+    }
+
+    /**
+     * Извлекает ADTS AAC поток из MPEG-TS файла.
+     * Каждый TS-пакет 188 байт: 0x47 + PID + flags + payload.
+     * PES-пакеты с stream_id 0xC0..0xDF содержат AAC-аудио.
+     * Склеенный payload без PES-заголовков = чистый ADTS .aac.
+     */
+    private void tsToAac(File tsFile, File aacFile) throws Exception {
+        try (FileInputStream in = new FileInputStream(tsFile);
+             FileOutputStream out = new FileOutputStream(aacFile)) {
+            byte[] pkt = new byte[188];
+            ByteArrayOutputStream pesBuf = new ByteArrayOutputStream();
+            int n;
+            while ((n = in.read(pkt)) == 188) {
+                if (pkt[0] != 0x47) continue;
+                boolean startUnit = (pkt[1] & 0x40) != 0;
+                int afc = (pkt[3] >> 4) & 0x03;
+                if (afc == 0 || afc == 2) continue;
+                int payloadStart = 4;
+                if (afc == 3) {
+                    int afLen = pkt[4] & 0xFF;
+                    payloadStart = 5 + afLen;
+                }
+                if (payloadStart >= 188) continue;
+
+                if (startUnit && pesBuf.size() > 0) {
+                    flushPes(pesBuf.toByteArray(), out);
+                    pesBuf.reset();
+                }
+                pesBuf.write(pkt, payloadStart, 188 - payloadStart);
+            }
+            if (pesBuf.size() > 0) flushPes(pesBuf.toByteArray(), out);
+        }
+        Log.i(TAG, "tsToAac: " + tsFile.length() + " -> " + aacFile.length() + " bytes");
+    }
+
+    private void flushPes(byte[] pes, FileOutputStream out) throws Exception {
+        if (pes.length < 9) return;
+        if (!(pes[0] == 0 && pes[1] == 0 && pes[2] == 1)) return;
+        int sid = pes[3] & 0xFF;
+        if (sid < 0xC0 || sid > 0xDF) return;   // только audio streams
+        int headerLen = pes[8] & 0xFF;
+        int off = 9 + headerLen;
+        if (off >= pes.length) return;
+        out.write(pes, off, pes.length - off);
     }
 
     private void uiSetStatus(String s) {
