@@ -30,6 +30,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -468,85 +469,115 @@ public class VKMusicActivity extends Activity {
     }
 
     /**
-     * Распаковка MPEG-TS -> MP3 (без перекодирования).
-     * Проход 1: считаем все PID и объём payload.
-     * Проход 2: берём только самый крупный PID, собираем его PES-поток,
-     * удаляем PES-заголовки, получаем чистые MP3-кадры.
+     * Распаковка MPEG-TS -> MP3.
+     * Автодетект размера пакета (188 = TS, 192 = M2TS с 4-байтовым префиксом).
+     * Затем считает PID-статистику и берёт самый крупный PID.
      */
     private void tsToMp3(File tsFile, File mp3File) throws Exception {
-        // --- проход 1: статистика PID ---
-        int[] pidBytes = new int[8192];
+        byte[] data = new byte[(int) tsFile.length()];
         try (FileInputStream in = new FileInputStream(tsFile)) {
-            byte[] pkt = new byte[188];
-            int n;
-            while ((n = in.read(pkt)) == 188) {
-                if (pkt[0] != 0x47) continue;
-                int pid = ((pkt[1] & 0x1F) << 8) | (pkt[2] & 0xFF);
-                pidBytes[pid] += 188;
+            int rd = 0;
+            while (rd < data.length) {
+                int n = in.read(data, rd, data.length - rd);
+                if (n < 0) break;
+                rd += n;
             }
+        }
+
+        // --- детект выравнивания ---
+        int bestSize = 188, bestOffset = 0, bestCount = 0;
+        int scanLimit = Math.min(data.length, 192 * 200);
+        for (int size : new int[]{188, 192}) {
+            for (int off = 0; off < size && off < data.length; off++) {
+                int count = 0, total = 0;
+                for (int pos = off; pos < scanLimit; pos += size) {
+                    total++;
+                    if (data[pos] == 0x47) count++;
+                }
+                if (count > bestCount) { bestCount = count; bestSize = size; bestOffset = off; }
+            }
+        }
+        int prefixLen = bestSize - 188;
+        int start = bestOffset - prefixLen;
+        if (start < 0) start = 0;
+
+        // --- PID-статистика ---
+        int[] pidBytes = new int[8192];
+        int totalPkts = 0, syncHits = 0;
+        for (int pos = start; pos + bestSize <= data.length; pos += bestSize) {
+            int ts = pos + prefixLen;
+            totalPkts++;
+            if (data[ts] != 0x47) continue;
+            syncHits++;
+            int pid = ((data[ts+1] & 0x1F) << 8) | (data[ts+2] & 0xFF);
+            pidBytes[pid] += 188;
         }
         int topPid = -1, topBytes = 0;
         StringBuilder pidLog = new StringBuilder();
-        for (int i = 0; i < pidBytes.length; i++) {
+        for (int i = 0; i < 8192; i++) {
             if (pidBytes[i] > 0) {
-                pidLog.append("pid ").append(i).append("=").append(pidBytes[i]).append(" ");
+                if (pidLog.length() < 400) pidLog.append(i).append(":").append(pidBytes[i]).append(" ");
                 if (pidBytes[i] > topBytes) { topBytes = pidBytes[i]; topPid = i; }
             }
         }
-        Log.i(TAG, "pid stats: " + pidLog);
-        if (topPid < 0) throw new Exception("TS пустой");
-        Log.i(TAG, "top pid=" + topPid + " bytes=" + topBytes);
 
-        // --- проход 2: извлекаем поток topPid ---
-        int pusiCount = 0, packets = 0;
-        try (FileInputStream in = new FileInputStream(tsFile);
-             FileOutputStream out = new FileOutputStream(mp3File)) {
-            byte[] pkt = new byte[188];
-            ByteArrayOutputStream pesBuf = new ByteArrayOutputStream();
-            int n;
-            while ((n = in.read(pkt)) == 188) {
-                if (pkt[0] != 0x47) continue;
-                int pid = ((pkt[1] & 0x1F) << 8) | (pkt[2] & 0xFF);
+        // --- извлечение ---
+        ByteArrayOutputStream pesBuf = new ByteArrayOutputStream();
+        int pesCount = 0;
+        try (FileOutputStream out = new FileOutputStream(mp3File)) {
+            for (int pos = start; pos + bestSize <= data.length; pos += bestSize) {
+                int ts = pos + prefixLen;
+                if (data[ts] != 0x47) continue;
+                int pid = ((data[ts+1] & 0x1F) << 8) | (data[ts+2] & 0xFF);
                 if (pid != topPid) continue;
-                packets++;
-                boolean startUnit = (pkt[1] & 0x40) != 0;
-                int afc = (pkt[3] >> 4) & 0x03;
-                if (afc == 0) continue;
+                boolean pusi = (data[ts+1] & 0x40) != 0;
+                int afc = (data[ts+3] >> 4) & 0x03;
+                if (afc == 0 || afc == 2) continue;
                 int payloadStart = 4;
-                if (afc == 2) {
-                    // adaptation без payload
-                    continue;
-                }
                 if (afc == 3) {
-                    int afLen = pkt[4] & 0xFF;
+                    int afLen = data[ts+4] & 0xFF;
                     payloadStart = 5 + afLen;
                 }
                 if (payloadStart >= 188) continue;
-
-                if (startUnit) {
-                    pusiCount++;
-                    if (pesBuf.size() > 0) {
-                        flushPesToMp3(pesBuf.toByteArray(), out);
-                        pesBuf.reset();
-                    }
+                if (pusi && pesBuf.size() > 0) {
+                    flushPesToMp3(pesBuf.toByteArray(), out);
+                    pesBuf.reset();
+                    pesCount++;
                 }
-                pesBuf.write(pkt, payloadStart, 188 - payloadStart);
+                pesBuf.write(data, ts + payloadStart, 188 - payloadStart);
             }
-            if (pesBuf.size() > 0) flushPesToMp3(pesBuf.toByteArray(), out);
+            if (pesBuf.size() > 0) { flushPesToMp3(pesBuf.toByteArray(), out); pesCount++; }
         }
-        Log.i(TAG, "tsToMp3: pid=" + topPid + " packets=" + packets + " pusi=" + pusiCount + " out=" + mp3File.length());
-        if (mp3File.length() < 10000) throw new Exception("MP3 мало: " + mp3File.length() + " pusi=" + pusiCount);
+
+        String diag = "pktSize=" + bestSize + " offset=" + bestOffset + " hits=" + bestCount + "/" + totalPkts
+                + "\nsync=" + syncHits + " topPid=" + topPid + " pidBytes=" + topBytes
+                + "\npesCount=" + pesCount + " outBytes=" + mp3File.length()
+                + "\nfirst16=" + hex16(data, start, 16)
+                + "\npids=" + pidLog.toString();
+
+        try (FileWriter fw = new FileWriter(new File(mp3File.getParentFile(), mp3File.getName() + ".diag"))) {
+            fw.write(diag);
+        } catch (Exception ignored) {}
+
+        Log.i(TAG, "tsToMp3: " + diag);
+        if (mp3File.length() < 10000) throw new Exception("MP3 мало: " + mp3File.length() + " | " + diag);
+    }
+
+    private String hex16(byte[] data, int off, int len) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len && off + i < data.length; i++) {
+            sb.append(String.format("%02x", data[off + i]));
+        }
+        return sb.toString();
     }
 
     private void flushPesToMp3(byte[] pes, FileOutputStream out) throws Exception {
         if (pes.length < 9) return;
         if (!(pes[0] == 0 && pes[1] == 0 && pes[2] == 1)) {
-            // нет PES-заголовка — просто пишем всё (сырые MP3-кадры)
             out.write(pes);
             return;
         }
         int sid = pes[3] & 0xFF;
-        // audio (0xC0-0xDF) или private_stream_1 (0xBD)
         if (!((sid >= 0xC0 && sid <= 0xDF) || sid == 0xBD)) return;
         int headerLen = pes[8] & 0xFF;
         int off = 9 + headerLen;
@@ -565,6 +596,15 @@ public class VKMusicActivity extends Activity {
             } else {
                 for (File f : files) {
                     sb.append(f.getName()).append("  ").append(f.length()).append(" b\n");
+                }
+                for (File f : files) {
+                    if (f.getName().endsWith(".diag")) {
+                        sb.append("\n-- ").append(f.getName()).append(" --\n");
+                        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(f))) {
+                            String line;
+                            while ((line = br.readLine()) != null) sb.append(line).append("\n");
+                        } catch (Exception ignored) {}
+                    }
                 }
             }
             String txt = sb.toString();
