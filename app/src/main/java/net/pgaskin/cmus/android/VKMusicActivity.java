@@ -304,12 +304,12 @@ public class VKMusicActivity extends Activity {
                 }
                 final String path = playFile.getAbsolutePath();
                 final String display = audio.displayName();
+                long sz = playFile.length() / 1024;
                 runOnUiThread(() -> {
-                    ipc.send("view 1");
-                    ipc.send("add " + path);
+                    ipc.send("add -q " + path);
                     ipc.send("view queue");
                     ipc.send("player-play");
-                    statusText.setText("Играю: " + display);
+                    statusText.setText("Играю: " + display + " (" + sz + " КБ)");
                 });
             } catch (Exception e) {
                 Log.e(TAG, "playTrack failed", e);
