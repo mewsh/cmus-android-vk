@@ -1,4 +1,3 @@
-```markdown
 # cmus-android-vk
 
 > **Форк [cmus-android](https://github.com/pgaskin/cmus-android) с интеграцией музыки ВКонтакте**
@@ -142,5 +141,3 @@ git submodule update --init
 ---
 
 Этот README написан для форка mewsh/cmus-android-vk. Оригинальный README доступен в репозитории pgaskin/cmus-android.
-
-```
