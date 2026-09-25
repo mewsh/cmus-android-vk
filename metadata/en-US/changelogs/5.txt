@@ -1,6 +1,0 @@
-* Update cmus.
-* Improve joystick acceleration.
-* Improve import/refresh action descriptions and usability.
-* Fix stuck colors when switching to certain themes.
-* Fix crash on some multi-channel files.
-* Internal refactoring and cleanup.

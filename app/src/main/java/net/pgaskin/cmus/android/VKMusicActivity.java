@@ -1,11 +1,15 @@
 package net.pgaskin.cmus.android;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
+import android.media.MediaCodec;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -25,13 +29,6 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import android.media.MediaCodec;
-import android.media.MediaExtractor;
-import android.media.MediaFormat;
-import android.media.MediaMuxer;
-import java.nio.ByteBuffer;
-import org.json.JSONObject;
-
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -39,6 +36,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -125,6 +123,11 @@ public class VKMusicActivity extends Activity {
             });
         });
         btns.addView(clearBtn);
+
+        Button infoBtn = new Button(this);
+        infoBtn.setText("Info");
+        infoBtn.setOnClickListener(v -> showInfo());
+        btns.addView(infoBtn);
 
         root.addView(btns);
 
@@ -322,7 +325,7 @@ public class VKMusicActivity extends Activity {
                 }
                 final String path = playFile.getAbsolutePath();
                 final String display = audio.displayName();
-                long sz = playFile.length() / 1024;
+                final long sz = playFile.length() / 1024;
                 runOnUiThread(() -> {
                     ipc.send("add -q " + path);
                     ipc.send("view queue");
@@ -336,14 +339,8 @@ public class VKMusicActivity extends Activity {
         });
     }
 
-    /**
-     * Скачивает URL. Если VK вернул HLS-манифест (#EXTM3U) — скачиваем все
-     * сегменты, расшифровываем AES-128 и склеиваем в один .ts-файл.
-     * Иначе — сохраняем как .mp3.
-     * Возвращает готовый файл (.mp3 или .ts).
-     */
     private File downloadAndPrepare(String urlStr, File cacheDir, String base) throws Exception {
-        byte[] head = httpGetBytes(urlStr, true);
+        byte[] head = httpGetBytes(urlStr);
         String headStr = new String(head, "UTF-8");
         if (headStr.startsWith("#EXTM3U")) {
             File out = new File(cacheDir, base + ".ts");
@@ -351,7 +348,6 @@ public class VKMusicActivity extends Activity {
             return out;
         } else {
             File out = new File(cacheDir, base + ".mp3");
-            // head содержит уже скачанное
             try (FileOutputStream fos = new FileOutputStream(out)) {
                 fos.write(head);
             }
@@ -364,7 +360,6 @@ public class VKMusicActivity extends Activity {
     }
 
     private void downloadHlsFromManifest(String baseUrl, String manifest, File out) throws Exception {
-        // Если это master-плейлист со ссылкой на media-плейлист — спускаемся
         if (manifest.contains("#EXT-X-STREAM-INF")) {
             String media = null;
             String[] lines = manifest.split("\n");
@@ -376,9 +371,9 @@ public class VKMusicActivity extends Activity {
                     }
                 }
             }
-            if (media == null) throw new Exception("Master без media-плейлиста");
+            if (media == null) throw new Exception("Master без media");
             String mediaUrl = new URL(new URL(baseUrl), media).toString();
-            manifest = new String(httpGetBytes(mediaUrl, false), "UTF-8");
+            manifest = new String(httpGetBytes(mediaUrl), "UTF-8");
             baseUrl = mediaUrl;
         }
 
@@ -398,8 +393,8 @@ public class VKMusicActivity extends Activity {
             } else if (line.startsWith("#EXT-X-KEY:")) {
                 Matcher km = keyRe.matcher(line);
                 if (km.find()) {
-                    key = httpGetBytes(km.group(1), false);
-                    if (key.length != 16) throw new Exception("Ключ длиной " + key.length);
+                    key = httpGetBytes(km.group(1));
+                    if (key.length != 16) throw new Exception("Ключ " + key.length);
                 }
                 Matcher im = ivRe.matcher(line);
                 if (im.find()) ivFixed = hexToBytes(im.group(1));
@@ -409,13 +404,13 @@ public class VKMusicActivity extends Activity {
         }
         if (segs.isEmpty()) throw new Exception("Сегментов нет");
 
-        uiSetStatus("HLS: сегментов " + segs.size() + ", качаю...");
+        uiSetStatus("HLS: сегментов " + segs.size());
 
         try (FileOutputStream fos = new FileOutputStream(out)) {
             int seq = mediaSeq;
             for (int i = 0; i < segs.size(); i++) {
                 String segUrl = new URL(new URL(baseUrl), segs.get(i)).toString();
-                byte[] data = httpGetBytes(segUrl, false);
+                byte[] data = httpGetBytes(segUrl);
                 if (key != null) {
                     byte[] iv;
                     if (ivFixed != null) {
@@ -455,7 +450,7 @@ public class VKMusicActivity extends Activity {
         return out;
     }
 
-    private byte[] httpGetBytes(String urlStr, boolean peek) throws Exception {
+    private byte[] httpGetBytes(String urlStr) throws Exception {
         URL url = new URL(urlStr);
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
         c.setRequestMethod("GET");
@@ -478,76 +473,23 @@ public class VKMusicActivity extends Activity {
         }
     }
 
-    /**
-     * Извлекает ADTS AAC поток из MPEG-TS файла.
-     * Каждый TS-пакет 188 байт: 0x47 + PID + flags + payload.
-     * PES-пакеты с stream_id 0xC0..0xDF содержат AAC-аудио.
-     * Склеенный payload без PES-заголовков = чистый ADTS .aac.
-     */
-    private void tsToAac(File tsFile, File aacFile) throws Exception {
-        try (FileInputStream in = new FileInputStream(tsFile);
-             FileOutputStream out = new FileOutputStream(aacFile)) {
-            byte[] pkt = new byte[188];
-            ByteArrayOutputStream pesBuf = new ByteArrayOutputStream();
-            int n;
-            while ((n = in.read(pkt)) == 188) {
-                if (pkt[0] != 0x47) continue;
-                boolean startUnit = (pkt[1] & 0x40) != 0;
-                int afc = (pkt[3] >> 4) & 0x03;
-                if (afc == 0 || afc == 2) continue;
-                int payloadStart = 4;
-                if (afc == 3) {
-                    int afLen = pkt[4] & 0xFF;
-                    payloadStart = 5 + afLen;
-                }
-                if (payloadStart >= 188) continue;
-
-                if (startUnit && pesBuf.size() > 0) {
-                    flushPes(pesBuf.toByteArray(), out);
-                    pesBuf.reset();
-                }
-                pesBuf.write(pkt, payloadStart, 188 - payloadStart);
-            }
-            if (pesBuf.size() > 0) flushPes(pesBuf.toByteArray(), out);
-        }
-        Log.i(TAG, "tsToAac: " + tsFile.length() + " -> " + aacFile.length() + " bytes");
-    }
-
-    private void flushPes(byte[] pes, FileOutputStream out) throws Exception {
-        if (pes.length < 9) return;
-        if (!(pes[0] == 0 && pes[1] == 0 && pes[2] == 1)) return;
-        int sid = pes[3] & 0xFF;
-        if (sid < 0xC0 || sid > 0xDF) return;   // только audio streams
-        int headerLen = pes[8] & 0xFF;
-        int off = 9 + headerLen;
-        if (off >= pes.length) return;
-        out.write(pes, off, pes.length - off);
-    }
-
-    /**
-     * Перепаковка MPEG-TS в MP4-контейнер с AAC-дорожкой через системные
-     * Android-API. MediaExtractor сам разбирает TS и отдаёт сжатые AAC-семплы,
-     * MediaMuxer складывает их в MP4. Без перекодирования.
-     */
-    /**
-     * Декодирует аудио из MPEG-TS в несжатый WAV (PCM 16-bit LE) через
-     * MediaExtractor + MediaCodec. cmus читает WAV без вопросов.
-     */
     private void tsToWav(File tsFile, File wavFile) throws Exception {
+        Log.i(TAG, "tsToWav: in=" + tsFile.length() + " bytes");
         MediaExtractor ex = new MediaExtractor();
         ex.setDataSource(tsFile.getAbsolutePath());
         int audioTrack = -1;
         MediaFormat inFmt = null;
+        StringBuilder tracksLog = new StringBuilder();
         for (int i = 0; i < ex.getTrackCount(); i++) {
             MediaFormat f = ex.getTrackFormat(i);
             String mime = f.getString(MediaFormat.KEY_MIME);
-            Log.i(TAG, "track " + i + " mime=" + mime);
-            if (mime != null && mime.startsWith("audio/")) {
+            tracksLog.append("[").append(i).append(":").append(mime).append("]");
+            if (mime != null && mime.startsWith("audio/") && audioTrack < 0) {
                 audioTrack = i;
                 inFmt = f;
-                break;
             }
         }
+        Log.i(TAG, "tracks=" + tracksLog);
         if (audioTrack < 0) { ex.release(); throw new Exception("audio трек не найден"); }
         ex.selectTrack(audioTrack);
 
@@ -556,21 +498,20 @@ public class VKMusicActivity extends Activity {
         dec.configure(inFmt, null, null, 0);
         dec.start();
 
-        int sampleRate = inFmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)
-                ? inFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) : 44100;
-        int channels = inFmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)
-                ? inFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) : 2;
+        int sampleRate = 44100, channels = 2, pcmEncoding = 2;
+        if (inFmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) sampleRate = inFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+        if (inFmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) channels = inFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
 
         if (wavFile.exists()) wavFile.delete();
         FileOutputStream out = new FileOutputStream(wavFile);
-        out.write(new byte[44]); // зарезервировать WAV header
+        out.write(new byte[44]);
 
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         boolean inputDone = false, outputDone = false;
         long totalPcm = 0;
-        int loops = 0;
+        int loops = 0, readSamples = 0, decodedFrames = 0;
 
-        while (!outputDone && loops < 100000) {
+        while (!outputDone && loops < 500000) {
             loops++;
             if (!inputDone) {
                 int inIdx = dec.dequeueInputBuffer(10000);
@@ -583,6 +524,7 @@ public class VKMusicActivity extends Activity {
                         inputDone = true;
                     } else {
                         dec.queueInputBuffer(inIdx, 0, sz, ex.getSampleTime(), 0);
+                        readSamples++;
                         ex.advance();
                     }
                 }
@@ -597,6 +539,7 @@ public class VKMusicActivity extends Activity {
                     outBuf.get(data);
                     out.write(data);
                     totalPcm += data.length;
+                    decodedFrames++;
                 }
                 dec.releaseOutputBuffer(outIdx, false);
                 if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true;
@@ -604,6 +547,8 @@ public class VKMusicActivity extends Activity {
                 MediaFormat of = dec.getOutputFormat();
                 if (of.containsKey(MediaFormat.KEY_SAMPLE_RATE)) sampleRate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE);
                 if (of.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) channels = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+                if (of.containsKey(MediaFormat.KEY_PCM_ENCODING)) pcmEncoding = of.getInteger(MediaFormat.KEY_PCM_ENCODING);
+                Log.i(TAG, "outFmt: rate=" + sampleRate + " ch=" + channels + " pcmEnc=" + pcmEncoding);
             }
             if ((loops & 0x3F) == 0) {
                 final long tp = totalPcm;
@@ -615,9 +560,11 @@ public class VKMusicActivity extends Activity {
         ex.release();
         out.close();
 
-        int bitsPerSample = 16;
+        int bitsPerSample = (pcmEncoding == 4) ? 32 : 16;
         int byteRate = sampleRate * channels * bitsPerSample / 8;
         int blockAlign = channels * bitsPerSample / 8;
+        int fmtTag = (pcmEncoding == 4) ? 3 : 1;
+
         java.io.RandomAccessFile raf = new java.io.RandomAccessFile(wavFile, "rw");
         raf.seek(0);
         raf.write("RIFF".getBytes("US-ASCII"));
@@ -625,7 +572,7 @@ public class VKMusicActivity extends Activity {
         raf.write("WAVE".getBytes("US-ASCII"));
         raf.write("fmt ".getBytes("US-ASCII"));
         writeIntLE(raf, 16);
-        writeShortLE(raf, (short) 1);
+        writeShortLE(raf, (short) fmtTag);
         writeShortLE(raf, (short) channels);
         writeIntLE(raf, sampleRate);
         writeIntLE(raf, byteRate);
@@ -635,7 +582,20 @@ public class VKMusicActivity extends Activity {
         writeIntLE(raf, (int) totalPcm);
         raf.close();
 
-        Log.i(TAG, "tsToWav: " + totalPcm + " PCM bytes, rate=" + sampleRate + " ch=" + channels);
+        long durMs = (byteRate > 0) ? (totalPcm * 1000L / byteRate) : 0;
+
+        try {
+            File diag = new File(wavFile.getParentFile(), wavFile.getName() + ".txt");
+            java.io.FileWriter fw = new java.io.FileWriter(diag);
+            fw.write("tsFile=" + tsFile.length() + "\n");
+            fw.write("tracks=" + tracksLog + "\n");
+            fw.write("rate=" + sampleRate + " ch=" + channels + " bits=" + bitsPerSample + " pcmEnc=" + pcmEncoding + "\n");
+            fw.write("readSamples=" + readSamples + " decodedFrames=" + decodedFrames + "\n");
+            fw.write("totalPcm=" + totalPcm + " durMs=" + durMs + "\n");
+            fw.close();
+        } catch (Exception ignored) {}
+
+        Log.i(TAG, "wav done: readSamples=" + readSamples + " frames=" + decodedFrames + " pcm=" + totalPcm + " durMs=" + durMs);
         if (totalPcm < 10000) throw new Exception("PCM мало: " + totalPcm);
     }
 
@@ -645,6 +605,39 @@ public class VKMusicActivity extends Activity {
     }
     private void writeShortLE(java.io.RandomAccessFile r, short v) throws Exception {
         r.write(v & 0xff); r.write((v >> 8) & 0xff);
+    }
+
+    private void showInfo() {
+        executor.execute(() -> {
+            File dir = new File(getCacheDir(), "vk");
+            File[] files = dir.listFiles();
+            StringBuilder sb = new StringBuilder();
+            sb.append("cache: ").append(dir.getAbsolutePath()).append("\n\n");
+            if (files == null || files.length == 0) {
+                sb.append("(empty)");
+            } else {
+                for (File f : files) {
+                    sb.append(f.getName()).append("  ").append(f.length()).append(" b\n");
+                }
+                for (File f : files) {
+                    if (f.getName().endsWith(".wav.txt")) {
+                        sb.append("\n-- ").append(f.getName()).append(" --\n");
+                        try {
+                            java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(f));
+                            String line;
+                            while ((line = br.readLine()) != null) sb.append(line).append("\n");
+                            br.close();
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
+            String txt = sb.toString();
+            runOnUiThread(() -> new AlertDialog.Builder(this)
+                    .setTitle("Info")
+                    .setMessage(txt)
+                    .setPositiveButton("OK", null)
+                    .show());
+        });
     }
 
     private void uiSetStatus(String s) {
