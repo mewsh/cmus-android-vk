@@ -25,6 +25,11 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import android.media.MediaCodec;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
+import android.media.MediaMuxer;
+import java.nio.ByteBuffer;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -288,26 +293,28 @@ public class VKMusicActivity extends Activity {
                 File mp3 = new File(cacheDir, base + ".mp3");
                 File ts  = new File(cacheDir, base + ".ts");
                 File aac = new File(cacheDir, base + ".aac");
+                File m4a = new File(cacheDir, base + ".m4a");
 
                 File playFile;
-                if (aac.exists() && aac.length() > 10000) {
-                    playFile = aac;
+                if (m4a.exists() && m4a.length() > 10000) {
+                    playFile = m4a;
                 } else if (ts.exists() && ts.length() > 10000) {
-                    uiSetStatus("Распаковываю .ts -> .aac...");
-                    tsToAac(ts, aac);
-                    playFile = (aac.exists() && aac.length() > 10000) ? aac : ts;
+                    uiSetStatus("Перепаковка .ts -> .m4a...");
+                    tsToM4a(ts, m4a);
+                    playFile = (m4a.exists() && m4a.length() > 10000) ? m4a : ts;
                 } else if (mp3.exists() && mp3.length() > 10000) {
                     playFile = mp3;
                 } else {
                     if (mp3.exists()) mp3.delete();
                     if (ts.exists()) ts.delete();
                     if (aac.exists()) aac.delete();
+                    if (m4a.exists()) m4a.delete();
                     uiSetStatus("Скачиваю: " + audio.displayName());
                     File dl = downloadAndPrepare(url, cacheDir, base);
                     if (dl.getName().endsWith(".ts")) {
-                        uiSetStatus("Распаковываю .ts -> .aac...");
-                        tsToAac(dl, aac);
-                        playFile = (aac.exists() && aac.length() > 10000) ? aac : dl;
+                        uiSetStatus("Перепаковка .ts -> .m4a...");
+                        tsToM4a(dl, m4a);
+                        playFile = (m4a.exists() && m4a.length() > 10000) ? m4a : dl;
                     } else {
                         playFile = dl;
                     }
@@ -517,6 +524,61 @@ public class VKMusicActivity extends Activity {
         int off = 9 + headerLen;
         if (off >= pes.length) return;
         out.write(pes, off, pes.length - off);
+    }
+
+    /**
+     * Перепаковка MPEG-TS в MP4-контейнер с AAC-дорожкой через системные
+     * Android-API. MediaExtractor сам разбирает TS и отдаёт сжатые AAC-семплы,
+     * MediaMuxer складывает их в MP4. Без перекодирования.
+     */
+    private void tsToM4a(File tsFile, File m4aFile) throws Exception {
+        MediaExtractor ex = new MediaExtractor();
+        ex.setDataSource(tsFile.getAbsolutePath());
+        int audioTrack = -1;
+        MediaFormat fmt = null;
+        for (int i = 0; i < ex.getTrackCount(); i++) {
+            MediaFormat f = ex.getTrackFormat(i);
+            String mime = f.getString(MediaFormat.KEY_MIME);
+            Log.i(TAG, "track " + i + " mime=" + mime);
+            if (mime != null && mime.startsWith("audio/")) {
+                audioTrack = i;
+                fmt = f;
+                break;
+            }
+        }
+        if (audioTrack < 0) {
+            ex.release();
+            throw new Exception("audio трек не найден в .ts");
+        }
+        ex.selectTrack(audioTrack);
+
+        if (m4aFile.exists()) m4aFile.delete();
+        MediaMuxer mx = new MediaMuxer(m4aFile.getAbsolutePath(),
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+        int outTrack = mx.addTrack(fmt);
+        mx.start();
+
+        ByteBuffer buf = ByteBuffer.allocate(512 * 1024);
+        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+        long written = 0;
+        while (true) {
+            int sz = ex.readSampleData(buf, 0);
+            if (sz < 0) break;
+            info.offset = 0;
+            info.size = sz;
+            info.presentationTimeUs = ex.getSampleTime();
+            info.flags = ex.getSampleFlags();
+            mx.writeSampleData(outTrack, buf, info);
+            written += sz;
+            ex.advance();
+        }
+        mx.stop();
+        mx.release();
+        ex.release();
+        Log.i(TAG, "tsToM4a: written " + written + " bytes, file " + m4aFile.length());
+        if (m4aFile.length() < 10000) {
+            throw new Exception("m4a слишком мал: " + m4aFile.length());
+        }
     }
 
     private void uiSetStatus(String s) {
