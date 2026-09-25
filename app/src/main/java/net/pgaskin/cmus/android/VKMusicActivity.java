@@ -292,29 +292,27 @@ public class VKMusicActivity extends Activity {
                 final String base = "vk_" + audio.ownerId + "_" + audio.id;
                 File mp3 = new File(cacheDir, base + ".mp3");
                 File ts  = new File(cacheDir, base + ".ts");
-                File aac = new File(cacheDir, base + ".aac");
-                File m4a = new File(cacheDir, base + ".m4a");
+                File wav = new File(cacheDir, base + ".wav");
 
                 File playFile;
-                if (m4a.exists() && m4a.length() > 10000) {
-                    playFile = m4a;
+                if (wav.exists() && wav.length() > 40000) {
+                    playFile = wav;
                 } else if (ts.exists() && ts.length() > 10000) {
-                    uiSetStatus("Перепаковка .ts -> .m4a...");
-                    tsToM4a(ts, m4a);
-                    playFile = (m4a.exists() && m4a.length() > 10000) ? m4a : ts;
+                    uiSetStatus("Декодирую .ts -> .wav...");
+                    tsToWav(ts, wav);
+                    playFile = wav;
                 } else if (mp3.exists() && mp3.length() > 10000) {
                     playFile = mp3;
                 } else {
                     if (mp3.exists()) mp3.delete();
                     if (ts.exists()) ts.delete();
-                    if (aac.exists()) aac.delete();
-                    if (m4a.exists()) m4a.delete();
+                    if (wav.exists()) wav.delete();
                     uiSetStatus("Скачиваю: " + audio.displayName());
                     File dl = downloadAndPrepare(url, cacheDir, base);
                     if (dl.getName().endsWith(".ts")) {
-                        uiSetStatus("Перепаковка .ts -> .m4a...");
-                        tsToM4a(dl, m4a);
-                        playFile = (m4a.exists() && m4a.length() > 10000) ? m4a : dl;
+                        uiSetStatus("Декодирую .ts -> .wav...");
+                        tsToWav(dl, wav);
+                        playFile = wav;
                     } else {
                         playFile = dl;
                     }
@@ -531,54 +529,122 @@ public class VKMusicActivity extends Activity {
      * Android-API. MediaExtractor сам разбирает TS и отдаёт сжатые AAC-семплы,
      * MediaMuxer складывает их в MP4. Без перекодирования.
      */
-    private void tsToM4a(File tsFile, File m4aFile) throws Exception {
+    /**
+     * Декодирует аудио из MPEG-TS в несжатый WAV (PCM 16-bit LE) через
+     * MediaExtractor + MediaCodec. cmus читает WAV без вопросов.
+     */
+    private void tsToWav(File tsFile, File wavFile) throws Exception {
         MediaExtractor ex = new MediaExtractor();
         ex.setDataSource(tsFile.getAbsolutePath());
         int audioTrack = -1;
-        MediaFormat fmt = null;
+        MediaFormat inFmt = null;
         for (int i = 0; i < ex.getTrackCount(); i++) {
             MediaFormat f = ex.getTrackFormat(i);
             String mime = f.getString(MediaFormat.KEY_MIME);
             Log.i(TAG, "track " + i + " mime=" + mime);
             if (mime != null && mime.startsWith("audio/")) {
                 audioTrack = i;
-                fmt = f;
+                inFmt = f;
                 break;
             }
         }
-        if (audioTrack < 0) {
-            ex.release();
-            throw new Exception("audio трек не найден в .ts");
-        }
+        if (audioTrack < 0) { ex.release(); throw new Exception("audio трек не найден"); }
         ex.selectTrack(audioTrack);
 
-        if (m4aFile.exists()) m4aFile.delete();
-        MediaMuxer mx = new MediaMuxer(m4aFile.getAbsolutePath(),
-                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-        int outTrack = mx.addTrack(fmt);
-        mx.start();
+        String mime = inFmt.getString(MediaFormat.KEY_MIME);
+        MediaCodec dec = MediaCodec.createDecoderByType(mime);
+        dec.configure(inFmt, null, null, 0);
+        dec.start();
 
-        ByteBuffer buf = ByteBuffer.allocate(512 * 1024);
+        int sampleRate = inFmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)
+                ? inFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) : 44100;
+        int channels = inFmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)
+                ? inFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) : 2;
+
+        if (wavFile.exists()) wavFile.delete();
+        FileOutputStream out = new FileOutputStream(wavFile);
+        out.write(new byte[44]); // зарезервировать WAV header
+
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        long written = 0;
-        while (true) {
-            int sz = ex.readSampleData(buf, 0);
-            if (sz < 0) break;
-            info.offset = 0;
-            info.size = sz;
-            info.presentationTimeUs = ex.getSampleTime();
-            info.flags = ex.getSampleFlags();
-            mx.writeSampleData(outTrack, buf, info);
-            written += sz;
-            ex.advance();
+        boolean inputDone = false, outputDone = false;
+        long totalPcm = 0;
+        int loops = 0;
+
+        while (!outputDone && loops < 100000) {
+            loops++;
+            if (!inputDone) {
+                int inIdx = dec.dequeueInputBuffer(10000);
+                if (inIdx >= 0) {
+                    ByteBuffer inBuf = dec.getInputBuffer(inIdx);
+                    inBuf.clear();
+                    int sz = ex.readSampleData(inBuf, 0);
+                    if (sz < 0) {
+                        dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        inputDone = true;
+                    } else {
+                        dec.queueInputBuffer(inIdx, 0, sz, ex.getSampleTime(), 0);
+                        ex.advance();
+                    }
+                }
+            }
+            int outIdx = dec.dequeueOutputBuffer(info, 10000);
+            if (outIdx >= 0) {
+                ByteBuffer outBuf = dec.getOutputBuffer(outIdx);
+                if (info.size > 0 && (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                    byte[] data = new byte[info.size];
+                    outBuf.position(info.offset);
+                    outBuf.limit(info.offset + info.size);
+                    outBuf.get(data);
+                    out.write(data);
+                    totalPcm += data.length;
+                }
+                dec.releaseOutputBuffer(outIdx, false);
+                if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true;
+            } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                MediaFormat of = dec.getOutputFormat();
+                if (of.containsKey(MediaFormat.KEY_SAMPLE_RATE)) sampleRate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+                if (of.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) channels = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+            }
+            if ((loops & 0x3F) == 0) {
+                final long tp = totalPcm;
+                runOnUiThread(() -> statusText.setText("Декодирую... " + (tp / 1024) + " КБ"));
+            }
         }
-        mx.stop();
-        mx.release();
+        try { dec.stop(); } catch (Exception ignored) {}
+        dec.release();
         ex.release();
-        Log.i(TAG, "tsToM4a: written " + written + " bytes, file " + m4aFile.length());
-        if (m4aFile.length() < 10000) {
-            throw new Exception("m4a слишком мал: " + m4aFile.length());
-        }
+        out.close();
+
+        int bitsPerSample = 16;
+        int byteRate = sampleRate * channels * bitsPerSample / 8;
+        int blockAlign = channels * bitsPerSample / 8;
+        java.io.RandomAccessFile raf = new java.io.RandomAccessFile(wavFile, "rw");
+        raf.seek(0);
+        raf.write("RIFF".getBytes("US-ASCII"));
+        writeIntLE(raf, (int) (36 + totalPcm));
+        raf.write("WAVE".getBytes("US-ASCII"));
+        raf.write("fmt ".getBytes("US-ASCII"));
+        writeIntLE(raf, 16);
+        writeShortLE(raf, (short) 1);
+        writeShortLE(raf, (short) channels);
+        writeIntLE(raf, sampleRate);
+        writeIntLE(raf, byteRate);
+        writeShortLE(raf, (short) blockAlign);
+        writeShortLE(raf, (short) bitsPerSample);
+        raf.write("data".getBytes("US-ASCII"));
+        writeIntLE(raf, (int) totalPcm);
+        raf.close();
+
+        Log.i(TAG, "tsToWav: " + totalPcm + " PCM bytes, rate=" + sampleRate + " ch=" + channels);
+        if (totalPcm < 10000) throw new Exception("PCM мало: " + totalPcm);
+    }
+
+    private void writeIntLE(java.io.RandomAccessFile r, int v) throws Exception {
+        r.write(v & 0xff); r.write((v >> 8) & 0xff);
+        r.write((v >> 16) & 0xff); r.write((v >> 24) & 0xff);
+    }
+    private void writeShortLE(java.io.RandomAccessFile r, short v) throws Exception {
+        r.write(v & 0xff); r.write((v >> 8) & 0xff);
     }
 
     private void uiSetStatus(String s) {
