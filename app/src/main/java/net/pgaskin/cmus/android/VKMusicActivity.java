@@ -7,9 +7,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
-import android.media.MediaCodec;
-import android.media.MediaExtractor;
-import android.media.MediaFormat;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -36,7 +33,6 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -295,29 +291,27 @@ public class VKMusicActivity extends Activity {
                 final String base = "vk_" + audio.ownerId + "_" + audio.id;
                 File mp3 = new File(cacheDir, base + ".mp3");
                 File ts  = new File(cacheDir, base + ".ts");
-                File wav = new File(cacheDir, base + ".wav");
 
                 File playFile;
-                if (wav.exists() && wav.length() > 40000) {
-                    playFile = wav;
-                } else if (ts.exists() && ts.length() > 10000) {
-                    uiSetStatus("Декодирую .ts -> .wav...");
-                    tsToWav(ts, wav);
-                    playFile = wav;
-                } else if (mp3.exists() && mp3.length() > 10000) {
+                if (mp3.exists() && mp3.length() > 10000) {
                     playFile = mp3;
                 } else {
-                    if (mp3.exists()) mp3.delete();
-                    if (ts.exists()) ts.delete();
-                    if (wav.exists()) wav.delete();
-                    uiSetStatus("Скачиваю: " + audio.displayName());
-                    File dl = downloadAndPrepare(url, cacheDir, base);
-                    if (dl.getName().endsWith(".ts")) {
-                        uiSetStatus("Декодирую .ts -> .wav...");
-                        tsToWav(dl, wav);
-                        playFile = wav;
+                    if (ts.exists() && ts.length() > 10000) {
+                        uiSetStatus("Распаковка .ts -> .mp3...");
+                        tsToMp3(ts, mp3);
+                        playFile = mp3;
                     } else {
-                        playFile = dl;
+                        if (ts.exists()) ts.delete();
+                        if (mp3.exists()) mp3.delete();
+                        uiSetStatus("Скачиваю: " + audio.displayName());
+                        File dl = downloadAndPrepare(url, cacheDir, base);
+                        if (dl.getName().endsWith(".ts")) {
+                            uiSetStatus("Распаковка .ts -> .mp3...");
+                            tsToMp3(dl, mp3);
+                            playFile = mp3;
+                        } else {
+                            playFile = dl;
+                        }
                     }
                 }
                 if (playFile == null || !playFile.exists() || playFile.length() < 4096) {
@@ -473,138 +467,51 @@ public class VKMusicActivity extends Activity {
         }
     }
 
-    private void tsToWav(File tsFile, File wavFile) throws Exception {
-        Log.i(TAG, "tsToWav: in=" + tsFile.length() + " bytes");
-        MediaExtractor ex = new MediaExtractor();
-        ex.setDataSource(tsFile.getAbsolutePath());
-        int audioTrack = -1;
-        MediaFormat inFmt = null;
-        StringBuilder tracksLog = new StringBuilder();
-        for (int i = 0; i < ex.getTrackCount(); i++) {
-            MediaFormat f = ex.getTrackFormat(i);
-            String mime = f.getString(MediaFormat.KEY_MIME);
-            tracksLog.append("[").append(i).append(":").append(mime).append("]");
-            if (mime != null && mime.startsWith("audio/") && audioTrack < 0) {
-                audioTrack = i;
-                inFmt = f;
-            }
-        }
-        Log.i(TAG, "tracks=" + tracksLog);
-        if (audioTrack < 0) { ex.release(); throw new Exception("audio трек не найден"); }
-        ex.selectTrack(audioTrack);
-
-        String mime = inFmt.getString(MediaFormat.KEY_MIME);
-        MediaCodec dec = MediaCodec.createDecoderByType(mime);
-        dec.configure(inFmt, null, null, 0);
-        dec.start();
-
-        int sampleRate = 44100, channels = 2, pcmEncoding = 2;
-        if (inFmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) sampleRate = inFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE);
-        if (inFmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) channels = inFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
-
-        if (wavFile.exists()) wavFile.delete();
-        FileOutputStream out = new FileOutputStream(wavFile);
-        out.write(new byte[44]);
-
-        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        boolean inputDone = false, outputDone = false;
-        long totalPcm = 0;
-        int loops = 0, readSamples = 0, decodedFrames = 0;
-
-        while (!outputDone && loops < 500000) {
-            loops++;
-            if (!inputDone) {
-                int inIdx = dec.dequeueInputBuffer(10000);
-                if (inIdx >= 0) {
-                    ByteBuffer inBuf = dec.getInputBuffer(inIdx);
-                    inBuf.clear();
-                    int sz = ex.readSampleData(inBuf, 0);
-                    if (sz < 0) {
-                        dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-                        inputDone = true;
-                    } else {
-                        dec.queueInputBuffer(inIdx, 0, sz, ex.getSampleTime(), 0);
-                        readSamples++;
-                        ex.advance();
-                    }
+    /**
+     * Распаковка MPEG-TS -> MP3 (без перекодирования).
+     * TS-пакеты по 188 байт, sync 0x47. Внутри PES-пакеты с MP3-потоком.
+     * Из каждого TS-пакета берём payload, а на границе PES-пакета
+     * отрезаем PES-заголовок и пишем чистые MP3-кадры.
+     */
+    private void tsToMp3(File tsFile, File mp3File) throws Exception {
+        try (FileInputStream in = new FileInputStream(tsFile);
+             FileOutputStream out = new FileOutputStream(mp3File)) {
+            byte[] pkt = new byte[188];
+            ByteArrayOutputStream pesBuf = new ByteArrayOutputStream();
+            int n;
+            while ((n = in.read(pkt)) == 188) {
+                if (pkt[0] != 0x47) continue;
+                boolean startUnit = (pkt[1] & 0x40) != 0;
+                int afc = (pkt[3] >> 4) & 0x03;
+                if (afc == 0 || afc == 2) continue;
+                int payloadStart = 4;
+                if (afc == 3) {
+                    int afLen = pkt[4] & 0xFF;
+                    payloadStart = 5 + afLen;
                 }
-            }
-            int outIdx = dec.dequeueOutputBuffer(info, 10000);
-            if (outIdx >= 0) {
-                ByteBuffer outBuf = dec.getOutputBuffer(outIdx);
-                if (info.size > 0 && (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                    byte[] data = new byte[info.size];
-                    outBuf.position(info.offset);
-                    outBuf.limit(info.offset + info.size);
-                    outBuf.get(data);
-                    out.write(data);
-                    totalPcm += data.length;
-                    decodedFrames++;
+                if (payloadStart >= 188) continue;
+
+                if (startUnit && pesBuf.size() > 0) {
+                    flushPesToMp3(pesBuf.toByteArray(), out);
+                    pesBuf.reset();
                 }
-                dec.releaseOutputBuffer(outIdx, false);
-                if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true;
-            } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                MediaFormat of = dec.getOutputFormat();
-                if (of.containsKey(MediaFormat.KEY_SAMPLE_RATE)) sampleRate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE);
-                if (of.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) channels = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
-                if (of.containsKey(MediaFormat.KEY_PCM_ENCODING)) pcmEncoding = of.getInteger(MediaFormat.KEY_PCM_ENCODING);
-                Log.i(TAG, "outFmt: rate=" + sampleRate + " ch=" + channels + " pcmEnc=" + pcmEncoding);
+                pesBuf.write(pkt, payloadStart, 188 - payloadStart);
             }
-            if ((loops & 0x3F) == 0) {
-                final long tp = totalPcm;
-                runOnUiThread(() -> statusText.setText("Декодирую... " + (tp / 1024) + " КБ"));
-            }
+            if (pesBuf.size() > 0) flushPesToMp3(pesBuf.toByteArray(), out);
         }
-        try { dec.stop(); } catch (Exception ignored) {}
-        dec.release();
-        ex.release();
-        out.close();
-
-        int bitsPerSample = (pcmEncoding == 4) ? 32 : 16;
-        int byteRate = sampleRate * channels * bitsPerSample / 8;
-        int blockAlign = channels * bitsPerSample / 8;
-        int fmtTag = (pcmEncoding == 4) ? 3 : 1;
-
-        java.io.RandomAccessFile raf = new java.io.RandomAccessFile(wavFile, "rw");
-        raf.seek(0);
-        raf.write("RIFF".getBytes("US-ASCII"));
-        writeIntLE(raf, (int) (36 + totalPcm));
-        raf.write("WAVE".getBytes("US-ASCII"));
-        raf.write("fmt ".getBytes("US-ASCII"));
-        writeIntLE(raf, 16);
-        writeShortLE(raf, (short) fmtTag);
-        writeShortLE(raf, (short) channels);
-        writeIntLE(raf, sampleRate);
-        writeIntLE(raf, byteRate);
-        writeShortLE(raf, (short) blockAlign);
-        writeShortLE(raf, (short) bitsPerSample);
-        raf.write("data".getBytes("US-ASCII"));
-        writeIntLE(raf, (int) totalPcm);
-        raf.close();
-
-        long durMs = (byteRate > 0) ? (totalPcm * 1000L / byteRate) : 0;
-
-        try {
-            File diag = new File(wavFile.getParentFile(), wavFile.getName() + ".txt");
-            java.io.FileWriter fw = new java.io.FileWriter(diag);
-            fw.write("tsFile=" + tsFile.length() + "\n");
-            fw.write("tracks=" + tracksLog + "\n");
-            fw.write("rate=" + sampleRate + " ch=" + channels + " bits=" + bitsPerSample + " pcmEnc=" + pcmEncoding + "\n");
-            fw.write("readSamples=" + readSamples + " decodedFrames=" + decodedFrames + "\n");
-            fw.write("totalPcm=" + totalPcm + " durMs=" + durMs + "\n");
-            fw.close();
-        } catch (Exception ignored) {}
-
-        Log.i(TAG, "wav done: readSamples=" + readSamples + " frames=" + decodedFrames + " pcm=" + totalPcm + " durMs=" + durMs);
-        if (totalPcm < 10000) throw new Exception("PCM мало: " + totalPcm);
+        Log.i(TAG, "tsToMp3: out=" + mp3File.length());
+        if (mp3File.length() < 10000) throw new Exception("MP3 мало: " + mp3File.length());
     }
 
-    private void writeIntLE(java.io.RandomAccessFile r, int v) throws Exception {
-        r.write(v & 0xff); r.write((v >> 8) & 0xff);
-        r.write((v >> 16) & 0xff); r.write((v >> 24) & 0xff);
-    }
-    private void writeShortLE(java.io.RandomAccessFile r, short v) throws Exception {
-        r.write(v & 0xff); r.write((v >> 8) & 0xff);
+    private void flushPesToMp3(byte[] pes, FileOutputStream out) throws Exception {
+        if (pes.length < 9) return;
+        if (!(pes[0] == 0 && pes[1] == 0 && pes[2] == 1)) return;
+        int sid = pes[3] & 0xFF;
+        if (sid < 0xC0 || sid > 0xDF) return;
+        int headerLen = pes[8] & 0xFF;
+        int off = 9 + headerLen;
+        if (off >= pes.length) return;
+        out.write(pes, off, pes.length - off);
     }
 
     private void showInfo() {
@@ -618,17 +525,6 @@ public class VKMusicActivity extends Activity {
             } else {
                 for (File f : files) {
                     sb.append(f.getName()).append("  ").append(f.length()).append(" b\n");
-                }
-                for (File f : files) {
-                    if (f.getName().endsWith(".wav.txt")) {
-                        sb.append("\n-- ").append(f.getName()).append(" --\n");
-                        try {
-                            java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(f));
-                            String line;
-                            while ((line = br.readLine()) != null) sb.append(line).append("\n");
-                            br.close();
-                        } catch (Exception ignored) {}
-                    }
                 }
             }
             String txt = sb.toString();
