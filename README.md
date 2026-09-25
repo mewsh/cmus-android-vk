@@ -1,123 +1,160 @@
-# cmus-android
+cmus-android-vk
 
-[![](https://github.com/pgaskin/cmus-android/actions/workflows/ci.yml/badge.svg)](https://github.com/pgaskin/cmus-android/actions/workflows/ci.yml)
+Форк cmus-android с интеграцией музыки ВКонтакте
 
-Port of [cmus](https://github.com/cmus/cmus) for Android with system integration and some extra UI features.
+https://github.com/mewsh/cmus-android-vk/actions/workflows/ci.yml/badge.svg
+https://img.shields.io/github/license/mewsh/cmus-android-vk
 
-I mostly vibe-coded this since it's pretty much all glue code, the extra features are relatively simple and well-defined, and the rest is mostly custom UI components and gesture handling, which are annoying to do by hand.
+---
 
-Although the code is almost entirely written and maintained by Claude, I made most of the higher-level architectural decisions and came up with the features to implement myself, and I read almost all of the thinking output. In addition, I already have a deep understanding of cmus (I'm one of the maintainers) and am able to point out the more subtle things.
+О проекте
 
-I already did most of the actual porting work earlier to make it work well on Termux, including the AAudio output plugin, portability and build fixes, playlist env var stuff, and so on. This project is mostly the UI and system integration.
+Этот репозиторий — форк популярного порта аудиоплеера cmus для Android. Оригинальный проект предоставляет нативный интерфейс с сенсорным управлением и глубокую интеграцию с системой, а данный форк добавляет поддержку потокового воспроизведения музыки из социальной сети ВКонтакте.
 
-[**`Download`**](https://github.com/pgaskin/cmus-android/releases/latest) [**`Website`**](https://pgaskin.net/cmus-android/)
+Большая часть кода написана с помощью LLM (Claude), однако архитектурные решения и функциональные требования определялись вручную. Автор форка является одним из мейнтейнеров оригинального cmus, что обеспечивает глубокое понимание внутреннего устройства плеера.
 
-### Screenshots
+---
 
-<table><thead><tr><td>
+✨ Ключевые возможности
 
-![](./metadata/en-US/images/phoneScreenshots/1.png)
+Интерфейс и управление
 
-</td><td>
+· Поддержка Android 14+
+· Сенсорно-ориентированные компоненты UI:
+  · Верхняя панель с живым поиском, переключением видов и настройками.
+  · Нижняя панель с управлением воспроизведением, повтором, случайным порядком, перемоткой, громкостью, очередью и клавиатурой.
+  · Долгое нажатие на треки/плейлисты для добавления/удаления.
+  · Виртуальный джойстик для прокрутки и переключения панелей/видов.
+  · Графический интерфейс настроек для большинства параметров.
 
-![](./metadata/en-US/images/phoneScreenshots/3.png)
+Интеграция с системой
 
-</td><td>
+· Системные медиа-контролы и метаданные.
+· Остановка процесса cmus при простое для экономии энергии с автоматическим перезапуском при фокусе или нажатии медиа-кнопок.
+· Цветовая схема Material You.
+· Воспроизведение музыки с внешнего хранилища.
+· Цвета интерфейса соответствуют теме cmus.
+· Приглушение звука (audio ducking).
+· Пути к библиотеке относительны к каталогам данных, что обеспечивает корректный импорт/экспорт.
 
-![](./metadata/en-US/images/phoneScreenshots/2.png)
+Дополнительные функции
 
-</td><td>
+· Поддержка обложек альбомов.
+· Таймер сна.
+· Настройки шрифтов.
+· Импорт/экспорт данных.
+· Субсекундная точность перемотки.
+· Непрерывное сохранение состояния.
+· Оптимизация энергопотребления.
 
-![](./metadata/en-US/images/phoneScreenshots/4.png)
+🎵 Интеграция с ВКонтакте (VK Music)
 
-</td></tr></thead></table>
+· Воспроизведение музыки из ВКонтакте: потоковое воспроизведение треков из вашей библиотеки VK.
+· Декодирование TS в PCM WAV через MediaCodec — реализовано в коммите a986f17 для обхода проблем с мультиплексором.
+· Интеграция с VK API: предполагается использование официального SDK или прямых запросов к API для получения списка треков и URL-адресов для потокового воспроизведения.
+· (Примечание: функциональность VK может требовать авторизации в приложении и доступа к API ВКонтакте.)
 
-<small>
+---
 
-*Like the wallpaper? See [github.com/pgaskin/windy](https://github.com/pgaskin/windy) (this one isn't vibe-coded).*
+📸 Скриншоты
 
-</small>
+(В оригинальном репозитории скриншоты отсутствуют. Вы можете добавить свои скриншоты, поместив их в папку metadata/en-US/images/phoneScreenshots/ и сославшись на них здесь.)
 
-### Features
+Пример разметки:
 
-- Supports Android 14+.
-- Additional touch-friendly UI components.
-  - Top bar with live-filter, views, and settings.
-  - Bottom bar with play/repeat/shuffle/seek/volume/queue/keyboard.
-  - Long-press tracks/playlists to add/remove.
-  - Joystick for scrolling and switching panes/views.
-  - Graphical settings view for most relevant settings.
-- System integration.
-  - System media controls and metadata.
-  - Stops the cmus process after being idle for a bit to save power, automatically restarting it when focused or media buttons are used.
-  - Material You color scheme.
-  - Music from external storage.
-  - UI colors match cmus theme.
-  - Audio ducking.
-  - Library paths are relative to data dirs so import/export works correctly.
-- Extra features.
-  - Album art support.
-  - Sleep timer.
-  - Font options.
-  - Data import/export.
-  - Sub-second seeking accuracy.
-  - Continuously saves state.
-- Optimized for power efficiency.
+Экран 1 Экран 2 Экран 3 Экран 4
+./metadata/en-US/images/phoneScreenshots/1.png ./metadata/en-US/images/phoneScreenshots/2.png ./metadata/en-US/images/phoneScreenshots/3.png ./metadata/en-US/images/phoneScreenshots/4.png
 
-### Building
+---
 
-The Android SDK, NDK, CMake, and Git are required. Building on Windows may work, but isn't tested.
+🚀 Сборка
+
+Требования
+
+· Android SDK
+· NDK
+· CMake
+· Git
+
+Сборка на Windows может работать, но не тестировалась.
+
+Шаги сборки
 
 ```bash
-# android sdk dependencies
+# Установка зависимостей Android SDK
 sdkmanager 'cmake;3.30.5' 'ndk;28.2.13676358' 'build-tools;36.0.0'
 
-# sync submodules
+# Синхронизация подмодулей
 git submodule update --init
 
-# apply submodule patches
-# note: do not commit the updated submodules
+# Применение патчей к подмодулям
+# Внимание: не коммитьте обновлённые подмодули
 ./patch.sh
 
-# build app
+# Сборка приложения
 ./gradlew assembleDebug
 ```
 
-### Development
+---
 
-To update the vendored libs, you'll also need gperf and tic on the host system. After updating the submodules, check for any required build system or codegen changes, then re-run the `gen.sh` scripts.
+🛠️ Разработка
 
-Patches to vendored libs are managed using a small helper script (similar to what I did for [vncpatch](https://github.com/pgaskin/vncpatch)). To add new patches or modify existing ones, commit them as usual in the submodules, then run the patch script again and commit the generated patch files.
+Обновление вендорных библиотек
+
+Для обновления вендорных библиотек потребуются gperf и tic в хост-системе. После обновления подмодулей проверьте необходимые изменения в системе сборки или кодогенерации и повторно запустите скрипты gen.sh.
+
+Управление патчами
+
+Патчи к вендорным библиотекам управляются с помощью вспомогательного скрипта (по аналогии с vncpatch).
 
 ```bash
-# tag pinned commit as the base one, apply/update patch files
+# Пометить зафиксированный коммит как базовый, применить/обновить патчи
 ./patch.sh
 
-# verify that submodules have all patches applied
+# Проверить, что все патчи применены
 ./patch.sh check
 
-# for a single submodule
+# Для одного подмодуля
 ./patch.sh cmus
 ```
 
-The existing build system for vendored libs is not used unless it's a well-designed CMake one which can easily be integrated. For most libs, I do a new CMake config from scratch.
+Сборка вендорных библиотек
 
-In most cases, Gradle will automatically pick up changes to the libs and build scripts as required.
+Существующая система сборки вендорных библиотек не используется, если только это не хорошо продуманная CMake-система, которую легко интегрировать. Для большинства библиотек создаётся новая CMake-конфигурация с нуля.
 
-If using a LLM, have it start by reading [status.md](./notes/status.md). The notes folder is all LLM-written except for the inital spec. This README is hand-written.
+В большинстве случаев Gradle автоматически подхватывает изменения в библиотеках и скриптах сборки.
 
-### Troubleshooting
+Использование LLM
 
-If cmus fails to start, there are reset options with various levels of granularity in the settings page.
+Если вы используете LLM, попросите её начать с чтения notes/status.md. Папка notes полностью написана LLM, за исключением начальной спецификации. Этот README написан вручную.
 
-If you aren't able to load tracks from your Music directory (or want to use a different directory), grant the all files access permission on the app settings, then restart it.
+---
 
-You may also need to use the all files permission if some of your media files are not indexed by the MediaStore (due to transfer issues or unsupported formats).
+❓ Устранение неполадок
 
-For M4A/AAC files, only HE-AAC and AAC-LC are supported (HE-AAC v2 and ALAC aren't).
+· cmus не запускается: в настройках есть опции сброса с различной степенью детализации.
+· Не загружаются треки из папки Music: предоставьте разрешение на доступ ко всем файлам в настройках приложения и перезапустите его.
+· Некоторые медиафайлы не индексируются MediaStore: также может потребоваться разрешение на доступ ко всем файлам.
+· Форматы M4A/AAC: поддерживаются только HE-AAC и AAC-LC (HE-AAC v2 и ALAC не поддерживаются).
+· Отладка IPC-сокета: в настройках есть опции отладки.
+· Логи cmus: видны только в отладочных сборках и должны быть явно включены в настройках.
+· cmus завис: если нативный интерфейс реагирует, но ничего не делает, вероятно, cmus завис или упал. Принудительно остановите приложение и перезапустите его. При создании issue на устройстве с root-доступом постарайтесь приложить стек-трейс.
 
-There are also debug options in settings for troubleshooting the internal IPC socket.
+---
 
-The debug logs from cmus itself are only visible on debuggable builds and need to be explicitly enabled in settings.
+📄 Лицензия
 
-If cmus appears frozen, and the native UI is responsive but doesn't do anything, cmus probably is stuck or crashed. You'll need to force-stop the app and restart it. If you open an issue and have a rooted device, try to include a stack trace.
+Проект распространяется под лицензией GPL-2.0-only. Подробности в файле LICENSE.
+
+---
+
+🔗 Ссылки
+
+· Оригинальный cmus-android
+· Сайт оригинального проекта
+· cmus (оригинальный плеер)
+· VK API для разработчиков
+
+---
+
+Этот README написан для форка mewsh/cmus-android-vk. Оригинальный README доступен в репозитории pgaskin/cmus-android.
