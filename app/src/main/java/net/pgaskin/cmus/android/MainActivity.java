@@ -1221,6 +1221,7 @@ public class MainActivity extends Activity implements TerminalViewClient, CmusSe
                 .getBoolean(CmusService.PREF_SHOW_CONTROL_BAR, true)) {
             menu.getMenu().add("Keyboard");
         }
+        menu.getMenu().add("VK Music");
         menu.getMenu().add("Settings");
         menu.setOnMenuItemClickListener(item -> {
             switch (item.getTitle().toString()) {
@@ -1234,6 +1235,8 @@ public class MainActivity extends Activity implements TerminalViewClient, CmusSe
                         this::updateCache);
                 case "Sleep timer" -> showSleepDialog();
                 case "Keyboard" -> toggleSoftKeyboard();
+                case "VK Music" -> startActivity(
+                        new Intent(this, VKMusicActivity.class));
                 case "Settings" -> startActivityForResult(
                         new Intent(this, SettingsActivity.class), REQUEST_SETTINGS);
             }
