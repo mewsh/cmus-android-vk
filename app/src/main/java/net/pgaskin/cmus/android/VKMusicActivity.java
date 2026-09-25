@@ -5,7 +5,6 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.util.Log;
@@ -16,7 +15,6 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ListView;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -32,10 +30,10 @@ public class VKMusicActivity extends Activity {
     private CmusIpc ipc;
     private boolean bound;
 
-    private String token;
-    private String userId;
+    private VKWebClient webClient;
 
-    private EditText urlField;
+    private EditText cookiePField;
+    private EditText cookieRemixsidField;
     private TextView statusText;
 
     private final List<VKApi.Audio> tracks = new ArrayList<>();
@@ -48,13 +46,10 @@ public class VKMusicActivity extends Activity {
             service = ((CmusService.LocalBinder) binder).getService();
             ipc = service.getIpc();
             bound = true;
-            Log.d(TAG, "service connected, ipc=" + ipc);
         }
-
         @Override
         public void onServiceDisconnected(ComponentName name) {
-            bound = false;
-            ipc = null;
+            bound = false; ipc = null;
         }
     };
 
@@ -67,32 +62,21 @@ public class VKMusicActivity extends Activity {
         root.setPadding(32, 32, 32, 32);
 
         statusText = new TextView(this);
-        statusText.setText(
-                "1. Нажмите «Открыть vkhost.github.io»\n" +
-                "2. Выберите Kate Mobile и нажмите «Разрешить»\n" +
-                "3. Скопируйте адрес из строки браузера\n" +
-                "4. Вставьте его в поле ниже и нажмите «Извлечь токен»");
+        statusText.setText("Введите cookies 'p' и 'remixsid' из браузера (DevTools -> Application -> Cookies -> vk.com)");
         root.addView(statusText);
 
-        Button openSite = new Button(this);
-        openSite.setText("Открыть vkhost.github.io");
-        openSite.setOnClickListener(v -> {
-            Intent browser = new Intent(Intent.ACTION_VIEW,
-                    Uri.parse("https://vkhost.github.io/"));
-            startActivity(browser);
-        });
-        root.addView(openSite);
+        cookiePField = new EditText(this);
+        cookiePField.setHint("Cookie 'p'");
+        root.addView(cookiePField);
 
-        urlField = new EditText(this);
-        urlField.setHint("Вставьте сюда URL с токеном");
-        urlField.setSingleLine(false);
-        urlField.setMinLines(2);
-        root.addView(urlField);
+        cookieRemixsidField = new EditText(this);
+        cookieRemixsidField.setHint("Cookie 'remixsid'");
+        root.addView(cookieRemixsidField);
 
-        Button parseBtn = new Button(this);
-        parseBtn.setText("Извлечь токен");
-        parseBtn.setOnClickListener(v -> parseToken());
-        root.addView(parseBtn);
+        Button connectBtn = new Button(this);
+        connectBtn.setText("Подключиться и загрузить треки");
+        connectBtn.setOnClickListener(v -> connectAndLoad());
+        root.addView(connectBtn);
 
         ListView listView = new ListView(this);
         root.addView(listView, new LinearLayout.LayoutParams(
@@ -100,101 +84,54 @@ public class VKMusicActivity extends Activity {
 
         adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1);
         listView.setAdapter(adapter);
-        listView.setOnItemClickListener((parent, view, position, id) ->
-                playTrack(tracks.get(position)));
+        listView.setOnItemClickListener((parent, view, position, id) -> playTrack(tracks.get(position)));
 
         setContentView(root);
 
         startForegroundService(new Intent(this, CmusService.class));
-        bindService(new Intent(this, CmusService.class), connection,
-                Context.BIND_AUTO_CREATE);
+        bindService(new Intent(this, CmusService.class), connection, Context.BIND_AUTO_CREATE);
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (bound) {
-            unbindService(connection);
-            bound = false;
-        }
+        if (bound) { unbindService(connection); bound = false; }
         executor.shutdown();
     }
 
-    private void parseToken() {
-        String input = urlField.getText().toString().trim();
-        if (input.isEmpty()) {
-            statusText.setText("Вставьте URL из адресной строки браузера");
+    private void connectAndLoad() {
+        String p = cookiePField.getText().toString().trim();
+        String remixsid = cookieRemixsidField.getText().toString().trim();
+        if (p.isEmpty() || remixsid.isEmpty()) {
+            statusText.setText("Заполните оба поля");
             return;
         }
-
-        // Токен лежит во фрагменте URL после #: #access_token=...&user_id=...
-        String accessToken = null;
-        String uid = null;
-        int hashIdx = input.indexOf('#');
-        String fragment = hashIdx >= 0 ? input.substring(hashIdx + 1) : input;
-
-        for (String pair : fragment.split("&")) {
-            int eq = pair.indexOf('=');
-            if (eq <= 0) {
-                continue;
-            }
-            String key = pair.substring(0, eq);
-            String value = pair.substring(eq + 1);
-            if ("access_token".equals(key)) {
-                accessToken = value;
-            } else if ("user_id".equals(key)) {
-                uid = value;
-            }
-        }
-
-        if (accessToken == null || accessToken.isEmpty()) {
-            statusText.setText("Токен не найден в URL. Убедитесь, что скопировали всю строку.");
-            return;
-        }
-
-        token = accessToken;
-        userId = uid != null ? uid : "0";
-        statusText.setText("Токен получен. Загрузка треков...");
+        webClient = new VKWebClient(p, remixsid);
+        statusText.setText("Загрузка треков...");
         loadTracks();
     }
 
     private void loadTracks() {
         executor.execute(() -> {
-            VKApi.ApiResult<List<VKApi.Audio>> r =
-                    VKApi.getAudio(token, userId, 100, 0);
+            VKApi.ApiResult<List<VKApi.Audio>> r = VKApi.getAudio(webClient, 100, 0);
             runOnUiThread(() -> {
-                if (r.error != null) {
-                    statusText.setText("Ошибка загрузки: " + r.error);
-                    return;
-                }
-                tracks.clear();
-                tracks.addAll(r.data);
+                if (r.error != null) { statusText.setText("Ошибка: " + r.error); return; }
+                tracks.clear(); tracks.addAll(r.data);
                 adapter.clear();
-                for (VKApi.Audio a : tracks) {
-                    adapter.add(a.displayName());
-                }
-                statusText.setText("Треков: " + tracks.size() +
-                        "\nНажмите на трек, чтобы отправить в cmus");
+                for (VKApi.Audio a : tracks) adapter.add(a.displayName());
+                statusText.setText("Треков: " + tracks.size());
             });
         });
     }
 
     private void playTrack(VKApi.Audio audio) {
-        if (ipc == null) {
-            Toast.makeText(this, "cmus не подключён", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        statusText.setText("Готовлю: " + audio.displayName());
+        if (ipc == null) { Toast.makeText(this, "cmus не подключён", Toast.LENGTH_SHORT).show(); return; }
+        statusText.setText("Играю: " + audio.displayName());
         executor.execute(() -> {
             String url = audio.url;
             if (url == null || url.isEmpty()) {
-                VKApi.ApiResult<String> r =
-                        VKApi.getAudioUrl(token, audio.ownerId, audio.id);
-                if (r.error != null) {
-                    runOnUiThread(() ->
-                            statusText.setText("Ошибка URL: " + r.error));
-                    return;
-                }
+                VKApi.ApiResult<String> r = VKApi.getAudioUrl(webClient, audio.ownerId, audio.id);
+                if (r.error != null) { runOnUiThread(() -> statusText.setText("Ошибка URL: " + r.error)); return; }
                 url = r.data;
             }
             final String finalUrl = url;
