@@ -81,6 +81,7 @@ public class VKMusicActivity extends Activity {
     private boolean showingPlaylists = false;
     private boolean currentIsLibrary = false;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService dlPool = Executors.newFixedThreadPool(4);
 
     private final ServiceConnection connection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
@@ -176,6 +177,7 @@ public class VKMusicActivity extends Activity {
         if (webView != null) { webView.destroy(); webView = null; }
         if (bound) { unbindService(connection); bound = false; }
         executor.shutdown();
+        dlPool.shutdown();
     }
 
     private void clearCache() {
@@ -529,23 +531,57 @@ public class VKMusicActivity extends Activity {
         int sampleRate = 44100, channels = 2, bits = 16;
         boolean fmtSet = false;
 
+        uiSetStatus("Скачиваю " + segs.size() + " сегментов...");
+
+        // Параллельно скачиваем и расшифровываем все сегменты в tmp-файлы
+        final File[] segFiles = new File[segs.size()];
+        final byte[][] segRaw = new byte[segs.size()][];
+        final byte[][] segDec = new byte[segs.size()][];
+        final String[] segErrors = new String[segs.size()];
+        final int[] segSeq = new int[segs.size()];
+        final String baseUrlF = baseUrl;
+
+        java.util.List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
         for (int i = 0; i < segs.size(); i++) {
-            String segUrl = new URL(new URL(baseUrl), segs.get(i)).toString();
-            byte[] data = httpGetBytes(segUrl);
-            diag.append("raw[").append(i).append("]=").append(hex16(data, 0, 8)).append("\n");
+            final int idx = i;
+            futures.add(dlPool.submit(() -> {
+                try {
+                    String segUrl = new URL(new URL(baseUrlF), segs.get(idx)).toString();
+                    byte[] data = httpGetBytes(segUrl);
+                    segRaw[idx] = data;
+                    if (key != null) {
+                        data = decryptSegment(data, key, ivFixed, mediaSeq, idx, null, idx);
+                    }
+                    segDec[idx] = data;
+                    File tmp = new File(cacheDir, "seg_" + idx + ".ts");
+                    try (FileOutputStream fo = new FileOutputStream(tmp)) { fo.write(data); }
+                    segFiles[idx] = tmp;
+                    segSeq[idx] = mediaSeq + idx;
+                } catch (Exception ex) {
+                    segErrors[idx] = ex.getMessage();
+                }
+            }));
+        }
+        for (java.util.concurrent.Future<?> f : futures) {
+            try { f.get(120, java.util.concurrent.TimeUnit.SECONDS); }
+            catch (Exception ignored) {}
+        }
 
-            if (key != null) {
-                data = decryptSegment(data, key, ivFixed, mediaSeq, i, diag, i);
+        // Диагностика + последовательное декодирование
+        for (int i = 0; i < segs.size(); i++) {
+            if (segErrors[i] != null) {
+                diag.append("seg").append(i).append(" ERR=").append(segErrors[i]).append("\n");
+                continue;
             }
-            diag.append("dec[").append(i).append("]=").append(hex16(data, 0, 8)).append("\n");
-
-            File tmp = new File(cacheDir, "seg_" + i + ".ts");
-            try (FileOutputStream fo = new FileOutputStream(tmp)) { fo.write(data); }
+            byte[] raw = segRaw[i];
+            byte[] dec = segDec[i];
+            diag.append("raw[").append(i).append("]=").append(hex16(raw, 0, 8))
+                .append(" dec[").append(i).append("]=").append(hex16(dec, 0, 8)).append("\n");
 
             long before = pcm.size();
             try {
                 int[] fmtOut = new int[3];
-                byte[] segPcm = decodeTsToPcm(tmp, fmtOut);
+                byte[] segPcm = decodeTsToPcm(segFiles[i], fmtOut);
                 if (segPcm != null && segPcm.length > 0) {
                     pcm.write(segPcm);
                     if (!fmtSet && fmtOut[0] > 0) {
@@ -558,13 +594,13 @@ public class VKMusicActivity extends Activity {
             } catch (Exception ex) {
                 diag.append("  ERR[").append(i).append("]=").append(ex.getMessage()).append("\n");
             }
-            tmp.delete();
+            if (segFiles[i] != null) segFiles[i].delete();
             long added = pcm.size() - before;
-            diag.append("seg").append(i).append(" in=").append(data.length)
+            diag.append("seg").append(i).append(" in=").append(dec != null ? dec.length : 0)
                     .append(" pcm=").append(added).append("\n");
 
             final int cur = i + 1;
-            if ((i & 1) == 0) uiSetStatus("HLS: " + cur + "/" + segs.size() + " (pcm " + (pcm.size()/1024) + " КБ)");
+            uiSetStatus("Декодирую: " + cur + "/" + segs.size() + " (pcm " + (pcm.size()/1024) + " КБ)");
         }
 
         byte[] pcmBytes = pcm.toByteArray();
@@ -591,7 +627,7 @@ public class VKMusicActivity extends Activity {
 
         // Если данные уже в открытом виде (TS/ID3/MP3/ftyp) — не расшифровываем.
         if (isPlausibleHeader(data)) {
-            diag.append("  iv").append(idx).append("[plain]=").append(hex16(data, 0, 4))
+            if (diag != null) diag.append("  iv").append(idx).append("[plain]=").append(hex16(data, 0, 4))
                     .append(" OK (no decrypt)\n");
             return data;
         }
@@ -615,17 +651,17 @@ public class VKMusicActivity extends Activity {
                 byte[] dec1 = aes128CbcDecrypt(firstBlock, key, iv);
                 String h = hex16(dec1, 0, 4);
                 boolean ok = isPlausibleHeader(dec1);
-                diag.append("  iv").append(idx).append("[").append(names.get(j)).append("]=")
+                if (diag != null) diag.append("  iv").append(idx).append("[").append(names.get(j)).append("]=")
                         .append(h).append(ok ? " OK" : "").append("\n");
                 if (ok) {
                     return aes128CbcDecrypt(data, key, iv);
                 }
             } catch (Exception ex) {
-                diag.append("  iv").append(idx).append("[").append(names.get(j)).append("] EX=")
+                if (diag != null) diag.append("  iv").append(idx).append("[").append(names.get(j)).append("] EX=")
                         .append(ex.getMessage()).append("\n");
             }
         }
-        diag.append("  iv").append(idx).append(" NO_MATCH\n");
+        if (diag != null) diag.append("  iv").append(idx).append(" NO_MATCH\n");
         return aes128CbcDecrypt(data, key, candidates.get(0));
     }
 
