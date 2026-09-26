@@ -28,7 +28,6 @@ import android.widget.Toast;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.InputStream;
@@ -321,11 +320,6 @@ public class VKMusicActivity extends Activity {
         });
     }
 
-    /**
-     * Скачивает URL. Если это HLS-манифест — качает каждый сегмент отдельно
-     * и сразу конвертирует в MP3-байты, клеит их в outMp3.
-     * Если это прямой mp3 — просто сохраняет.
-     */
     private File downloadAndBuildMp3(String urlStr, File cacheDir, String base, File outMp3, File diagFile) throws Exception {
         byte[] head = httpGetBytes(urlStr);
         String headStr = new String(head, "UTF-8");
@@ -333,14 +327,10 @@ public class VKMusicActivity extends Activity {
             try (FileOutputStream fos = new FileOutputStream(outMp3)) {
                 fos.write(head);
             }
-            if (outMp3.length() < 4096) {
-                String preview = new String(head, 0, Math.min(head.length, 300), "UTF-8").replaceAll("\\s+", " ");
-                throw new Exception("Мало (" + outMp3.length() + "b): " + preview);
-            }
+            if (outMp3.length() < 4096) throw new Exception("Прямой mp3 слишком мал: " + outMp3.length());
             return outMp3;
         }
 
-        // HLS
         String manifest = headStr;
         String baseUrl = urlStr;
         if (manifest.contains("#EXT-X-STREAM-INF")) {
@@ -409,8 +399,7 @@ public class VKMusicActivity extends Activity {
                     }
                     data = aes128CbcDecrypt(data, key, iv);
                 }
-                int before = (int) totalMp3;
-                int added = extractMp3FromTsSegment(data, fos);
+                int added = extractMp3Frames(data, fos);
                 totalMp3 += added;
                 diagLog.append("seg").append(i).append(" in=").append(data.length)
                         .append(" mp3=").append(added).append("\n");
@@ -430,88 +419,98 @@ public class VKMusicActivity extends Activity {
     }
 
     /**
-     * Извлекает MP3-байты из одного HLS-сегмента (TS или M2TS).
-     * Автодетект: 188 (TS) или 192 (M2TS с 4-байтовым префиксом).
-     * Возвращает сколько байт дописано в out.
+     * Сканирует сырые данные на MP3-кадры по синхрослову 0xFF Ex.
+     * Для надёжности проверяет, что следующий кадр начинается ровно
+     * через frame_size байт. Не зависит от TS-контейнера вообще.
      */
-    private int extractMp3FromTsSegment(byte[] data, FileOutputStream out) throws Exception {
-        // --- детект выравнивания ---
-        int bestSize = 188, bestOffset = 0, bestHits = 0;
-        int scanLimit = Math.min(data.length, 192 * 300);
-        for (int size : new int[]{188, 192}) {
-            for (int off = 0; off < size && off < data.length; off++) {
-                int hits = 0, total = 0;
-                for (int p = off; p < scanLimit; p += size) {
-                    total++;
-                    if (data[p] == 0x47) hits++;
-                }
-                if (total == 0) continue;
-                int ratio = hits * 100 / total;
-                if (ratio > 80 && hits > bestHits) { bestHits = hits; bestSize = size; bestOffset = off; }
-            }
-        }
-        int prefixLen = bestSize - 188;
-        int start = bestOffset - prefixLen;
-        if (start < 0) start = 0;
-
-        // --- PID-статистика ---
-        int[] pidBytes = new int[8192];
-        for (int pos = start; pos + bestSize <= data.length; pos += bestSize) {
-            int ts = pos + prefixLen;
-            if (data[ts] != 0x47) continue;
-            int pid = ((data[ts+1] & 0x1F) << 8) | (data[ts+2] & 0xFF);
-            pidBytes[pid] += 188;
-        }
-        int topPid = -1, topBytes = 0;
-        for (int i = 0; i < 8192; i++) {
-            if (pidBytes[i] > topBytes) { topBytes = pidBytes[i]; topPid = i; }
-        }
-        if (topPid < 0) return 0;
-
-        // --- извлечение ---
+    private int extractMp3Frames(byte[] data, FileOutputStream out) throws Exception {
         int written = 0;
-        ByteArrayOutputStream pesBuf = new ByteArrayOutputStream();
-        for (int pos = start; pos + bestSize <= data.length; pos += bestSize) {
-            int ts = pos + prefixLen;
-            if (data[ts] != 0x47) continue;
-            int pid = ((data[ts+1] & 0x1F) << 8) | (data[ts+2] & 0xFF);
-            if (pid != topPid) continue;
-            boolean pusi = (data[ts+1] & 0x40) != 0;
-            int afc = (data[ts+3] >> 4) & 0x03;
-            if (afc == 0 || afc == 2) continue;
-            int payloadStart = 4;
-            if (afc == 3) {
-                int afLen = data[ts+4] & 0xFF;
-                payloadStart = 5 + afLen;
+        int i = 0;
+        int consecutiveFails = 0;
+        while (i < data.length - 4) {
+            int b0 = data[i] & 0xFF;
+            int b1 = data[i + 1] & 0xFF;
+            if (b0 != 0xFF || (b1 & 0xE0) != 0xE0) {
+                i++;
+                consecutiveFails++;
+                if (consecutiveFails > 100000 && written > 1000000) break;
+                continue;
             }
-            if (payloadStart >= 188) continue;
+            int versionBits = (b1 >> 3) & 0x03;
+            int layerBits = (b1 >> 1) & 0x03;
+            int b2 = data[i + 2] & 0xFF;
+            int bitrateIdx = (b2 >> 4) & 0x0F;
+            int srIdx = (b2 >> 2) & 0x03;
+            int padding = (b2 >> 1) & 0x01;
 
-            if (pusi && pesBuf.size() > 0) {
-                written += flushPesToMp3(pesBuf.toByteArray(), out);
-                pesBuf.reset();
+            if (versionBits == 1 || layerBits == 0 || bitrateIdx == 0 || bitrateIdx == 15 || srIdx == 3) {
+                i++;
+                consecutiveFails++;
+                continue;
             }
-            pesBuf.write(data, ts + payloadStart, 188 - payloadStart);
-        }
-        if (pesBuf.size() > 0) {
-            written += flushPesToMp3(pesBuf.toByteArray(), out);
+            int frameSize = mp3FrameSize(versionBits, layerBits, bitrateIdx, srIdx, padding);
+            if (frameSize <= 4 || i + frameSize > data.length) {
+                i++;
+                consecutiveFails++;
+                continue;
+            }
+            int next = i + frameSize;
+            if (next + 2 < data.length) {
+                int nb0 = data[next] & 0xFF;
+                int nb1 = data[next + 1] & 0xFF;
+                if (nb0 != 0xFF || (nb1 & 0xE0) != 0xE0) {
+                    i++;
+                    consecutiveFails++;
+                    continue;
+                }
+            }
+            out.write(data, i, frameSize);
+            written += frameSize;
+            i += frameSize;
+            consecutiveFails = 0;
         }
         return written;
     }
 
-    private int flushPesToMp3(byte[] pes, FileOutputStream out) throws Exception {
-        if (pes.length < 9) return 0;
-        if (!(pes[0] == 0 && pes[1] == 0 && pes[2] == 1)) {
-            out.write(pes);
-            return pes.length;
+    private int mp3FrameSize(int version, int layer, int bitrateIdx, int srIdx, int padding) {
+        int[][][] bitrateTables = {
+            // MPEG 1
+            {
+                {0,32,64,96,128,160,192,224,256,288,320,352,384,416,448},
+                {0,32,48,56,64,80,96,112,128,160,192,224,256,320,384},
+                {0,32,40,48,56,64,80,96,112,128,160,192,224,256,320}
+            },
+            // MPEG 2/2.5
+            {
+                {0,32,48,56,64,80,96,112,128,144,160,176,192,224,256},
+                {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160},
+                {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160}
+            }
+        };
+        int[][][] sampleRateTables = {
+            {44100, 48000, 32000},
+            {22050, 24000, 16000},
+            {11025, 12000, 8000}
+        };
+        int versionGroup = (version == 3) ? 0 : 1; // 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+        int layerGroup;
+        if (layer == 3) layerGroup = 0;      // Layer I
+        else if (layer == 2) layerGroup = 1; // Layer II
+        else layerGroup = 2;                 // Layer III
+
+        int bitrate = bitrateTables[versionGroup][layerGroup][bitrateIdx];
+        if (bitrate == 0) return -1;
+        int sampleRate = sampleRateTables[versionGroup == 0 ? 0 : (version == 2 ? 1 : 2)][srIdx];
+        if (sampleRate == 0) return -1;
+
+        if (layerGroup == 0) {
+            // Layer I
+            return (12 * bitrate * 1000 / sampleRate + padding) * 4;
+        } else {
+            // Layer II/III
+            int coef = (versionGroup == 0) ? 144 : 72;
+            return coef * bitrate * 1000 / sampleRate + padding;
         }
-        int sid = pes[3] & 0xFF;
-        if (!((sid >= 0xC0 && sid <= 0xDF) || sid == 0xBD)) return 0;
-        int headerLen = pes[8] & 0xFF;
-        int off = 9 + headerLen;
-        if (off >= pes.length) return 0;
-        int len = pes.length - off;
-        out.write(pes, off, len);
-        return len;
     }
 
     private byte[] aes128CbcDecrypt(byte[] data, byte[] key, byte[] iv) throws Exception {
