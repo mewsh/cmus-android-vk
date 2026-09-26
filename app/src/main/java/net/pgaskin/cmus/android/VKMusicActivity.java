@@ -73,7 +73,13 @@ public class VKMusicActivity extends Activity {
     private static final int POLL_MAX = 80;
 
     private final List<VKApi.Audio> tracks = new ArrayList<>();
+    private final List<VKApi.Playlist> playlists = new ArrayList<>();
     private ArrayAdapter<String> adapter;
+    private ListView listView;
+    private Button tabMineBtn;
+    private Button tabPlaylistBtn;
+    private boolean showingPlaylists = false;
+    private boolean currentIsLibrary = false;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     private final ServiceConnection connection = new ServiceConnection() {
@@ -131,6 +137,18 @@ public class VKMusicActivity extends Activity {
         btns.addView(infoBtn);
 
         root.addView(btns);
+
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        tabMineBtn = new Button(this);
+        tabMineBtn.setText("Мои треки");
+        tabMineBtn.setOnClickListener(v -> switchToMine());
+        tabs.addView(tabMineBtn);
+        tabPlaylistBtn = new Button(this);
+        tabPlaylistBtn.setText("Плейлисты");
+        tabPlaylistBtn.setOnClickListener(v -> switchToPlaylists());
+        tabs.addView(tabPlaylistBtn);
+        root.addView(tabs);
 
         content = new FrameLayout(this);
         root.addView(content, new LinearLayout.LayoutParams(
@@ -259,12 +277,82 @@ public class VKMusicActivity extends Activity {
         content.removeAllViews();
         if (webView != null) { webView.destroy(); webView = null; }
 
+        showingPlaylists = false;
         adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1);
-        ListView listView = new ListView(this);
+        listView = new ListView(this);
         listView.setAdapter(adapter);
-        listView.setOnItemClickListener((p, view, pos, id) -> playTrack(tracks.get(pos)));
+        listView.setOnItemClickListener((p, view, pos, id) -> {
+            if (showingPlaylists) {
+                openPlaylist(playlists.get(pos));
+            } else {
+                playTrack(tracks.get(pos));
+            }
+        });
         content.addView(listView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private void switchToMine() {
+        if (adapter == null || listView == null) { showTrackList(); }
+        showingPlaylists = false;
+        currentIsLibrary = false;
+        if (adapter != null) {
+            adapter.clear();
+            for (VKApi.Audio a : tracks) adapter.add(a.displayName());
+        }
+        statusText.setText("Мои треки: " + tracks.size());
+    }
+
+    private void switchToPlaylists() {
+        showingPlaylists = true;
+        currentIsLibrary = false;
+        statusText.setText("Загрузка плейлистов...");
+        if (adapter != null) adapter.clear();
+        executor.execute(() -> {
+            VKApi.ApiResult<List<VKApi.Playlist>> r = VKApi.getPlaylists(token);
+            runOnUiThread(() -> {
+                if (r.error != null) {
+                    String e = r.error.toLowerCase();
+                    if (e.contains("expired") || e.contains("authorization") || e.contains("token")) {
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(KEY_TOKEN).apply();
+                        token = null;
+                        Toast.makeText(this, "Токен истёк — войди заново", Toast.LENGTH_LONG).show();
+                        recreate();
+                        return;
+                    }
+                    statusText.setText("Ошибка: " + r.error);
+                    return;
+                }
+                playlists.clear();
+                if (r.data != null) playlists.addAll(r.data);
+                adapter.clear();
+                for (VKApi.Playlist p : playlists) {
+                    adapter.add(p.title + " (" + p.size + ")");
+                }
+                statusText.setText("Плейлистов: " + playlists.size());
+            });
+        });
+    }
+
+    private void openPlaylist(VKApi.Playlist p) {
+        statusText.setText("Загрузка: " + p.title);
+        executor.execute(() -> {
+            VKApi.ApiResult<List<VKApi.Audio>> r = VKApi.getAudioFromPlaylist(token, p.id, p.ownerId, 200);
+            runOnUiThread(() -> {
+                if (r.error != null) {
+                    statusText.setText("Ошибка: " + r.error);
+                    return;
+                }
+                tracks.clear();
+                if (r.data != null) tracks.addAll(r.data);
+                showingPlaylists = false;
+                if (adapter != null) {
+                    adapter.clear();
+                    for (VKApi.Audio a : tracks) adapter.add(a.displayName());
+                }
+                statusText.setText(p.title + ": " + tracks.size() + " треков");
+            });
+        });
     }
 
     private void loadTracks() {
@@ -342,7 +430,8 @@ public class VKMusicActivity extends Activity {
                 long totalSec = (playFile.length() - 44) / (44100L * 2L * 2L);
                 final String durStr = (totalSec / 60) + ":" + String.format("%02d", totalSec % 60);
                 runOnUiThread(() -> {
-                    ipc.send("add -q " + path);
+                    ipc.send("view tree");
+                    ipc.send("add " + path);
                     ipc.send("view queue");
                     ipc.send("player-play");
                     statusText.setText("Играю: " + display + " (" + durStr + ", " + sz + " КБ)");
