@@ -53,6 +53,7 @@ public class VKMusicActivity extends Activity {
     private static final String TAG = "VKMusic";
     private static final String PREFS = "vk_music";
     private static final String KEY_TOKEN = "access_token";
+    private static final String KEY_FORCE = "force_rebuild";
     private static final Pattern TOK_RE = Pattern.compile("vk1\\.a\\.[A-Za-z0-9_\\-\\.]{60,}");
     private static final String UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
     private static final String REFERER = "https://vk.com/";
@@ -111,22 +112,17 @@ public class VKMusicActivity extends Activity {
         btns.addView(logoutBtn);
 
         Button clearBtn = new Button(this);
-        clearBtn.setText("Очистить кэш");
-        clearBtn.setOnClickListener(v -> {
-            executor.execute(() -> {
-                File dir = new File(getCacheDir(), "vk");
-                File[] files = dir.listFiles();
-                int n = 0;
-                if (files != null) for (File f : files) if (f.delete()) n++;
-                final int nn = n;
-                runOnUiThread(() -> Toast.makeText(this, "Удалено: " + nn, Toast.LENGTH_SHORT).show());
-            });
-        });
+        clearBtn.setText("Очистить");
+        clearBtn.setOnClickListener(v -> clearCache());
         btns.addView(clearBtn);
 
         Button reprocessBtn = new Button(this);
         reprocessBtn.setText("Reprocess");
-        reprocessBtn.setOnClickListener(v -> forceReprocess());
+        reprocessBtn.setOnClickListener(v -> {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_FORCE, true).apply();
+            Toast.makeText(this, "Флаг пересборки, тапни трек", Toast.LENGTH_LONG).show();
+            statusText.setText("Пересборка: тапни трек");
+        });
         btns.addView(reprocessBtn);
 
         Button infoBtn = new Button(this);
@@ -162,6 +158,17 @@ public class VKMusicActivity extends Activity {
         executor.shutdown();
     }
 
+    private void clearCache() {
+        executor.execute(() -> {
+            File dir = new File(getCacheDir(), "vk");
+            File[] files = dir.listFiles();
+            int n = 0;
+            if (files != null) for (File f : files) if (f.delete()) n++;
+            final int nn = n;
+            runOnUiThread(() -> Toast.makeText(this, "Удалено: " + nn, Toast.LENGTH_SHORT).show());
+        });
+    }
+
     private void showLogin() {
         content.removeAllViews();
         statusText.setText("Залогинься. Жду токен...");
@@ -177,18 +184,18 @@ public class VKMusicActivity extends Activity {
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 try {
                     String url = request.getUrl().toString();
-                    if (url != null && url.contains("vk1.a.")) captureFromString(url, "net");
+                    if (url != null && url.contains("vk1.a.")) captureFromString(url);
                     Map<String, String> h = request.getRequestHeaders();
                     if (h != null) for (String k : h.keySet()) {
                         String v = h.get(k);
-                        if (v != null && v.contains("vk1.a.")) captureFromString(v, "hdr:" + k);
+                        if (v != null && v.contains("vk1.a.")) captureFromString(v);
                     }
                 } catch (Exception e) { Log.e(TAG, "intercept", e); }
                 return super.shouldInterceptRequest(view, request);
             }
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
-                if (url != null && url.contains("vk1.a.")) captureFromString(url, "net-old");
+                if (url != null && url.contains("vk1.a.")) captureFromString(url);
                 return super.shouldInterceptRequest(view, url);
             }
             @Override public void onPageFinished(WebView view, String url) {
@@ -211,7 +218,7 @@ public class VKMusicActivity extends Activity {
         @Override public void run() {
             if (token != null || webView == null) return;
             if (pollCount >= POLL_MAX) {
-                statusText.setText("Токен не найден. Тапни play на треке.");
+                statusText.setText("Токен не найден");
                 return;
             }
             pollCount++;
@@ -230,19 +237,18 @@ public class VKMusicActivity extends Activity {
                 if (token != null) return;
                 if (value == null) { pollHandler.postDelayed(pollOnce, POLL_INTERVAL_MS); return; }
                 String t = value.replace("\"", "").trim();
-                if (t.startsWith("vk1.a.") && t.length() > 60) { captureFromString(t, "poll#" + pollCount); return; }
+                if (t.startsWith("vk1.a.") && t.length() > 60) { captureFromString(t); return; }
                 statusText.setText("Ищу токен... (" + pollCount + "/" + POLL_MAX + ")");
                 pollHandler.postDelayed(pollOnce, POLL_INTERVAL_MS);
             });
         }
     };
 
-    private synchronized void captureFromString(String s, String src) {
+    private synchronized void captureFromString(String s) {
         if (token != null || s == null) return;
         Matcher m = TOK_RE.matcher(s);
         if (!m.find()) return;
         String t = m.group();
-        Log.i(TAG, "captured from " + src + " len=" + t.length());
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_TOKEN, t).apply();
         token = t;
         pollHandler.removeCallbacksAndMessages(null);
@@ -274,7 +280,7 @@ public class VKMusicActivity extends Activity {
                     adapter.clear();
                     for (VKApi.Audio a : tracks) adapter.add(a.displayName());
                 }
-                statusText.setText("Треков: " + tracks.size() + " (тапни для игры)");
+                statusText.setText("Треков: " + tracks.size());
             });
         });
     }
@@ -297,18 +303,23 @@ public class VKMusicActivity extends Activity {
 
                 File cacheDir = new File(getCacheDir(), "vk");
                 if (!cacheDir.exists()) cacheDir.mkdirs();
-                final String base = "vk_" + audio.ownerId + "_" + audio.id;
+
+                boolean force = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_FORCE, false);
+                String base = "vk_" + audio.ownerId + "_" + audio.id
+                        + (force ? ("_" + System.currentTimeMillis()) : "");
+
                 File wav = new File(cacheDir, base + ".wav");
                 File diag = new File(cacheDir, base + ".diag");
 
                 File playFile;
-                if (wav.exists() && wav.length() > 40000) {
+                if (!force && wav.exists() && wav.length() > 40000) {
                     playFile = wav;
                 } else {
-                    if (wav.exists()) wav.delete();
-                    if (diag.exists()) diag.delete();
                     uiSetStatus("Скачиваю: " + audio.displayName());
                     playFile = downloadAndBuildWav(url, cacheDir, wav, diag);
+                    if (force) {
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_FORCE, false).apply();
+                    }
                 }
                 if (playFile == null || !playFile.exists() || playFile.length() < 4096) {
                     uiSetStatus("Файл не готов"); return;
@@ -383,26 +394,29 @@ public class VKMusicActivity extends Activity {
         if (segs.isEmpty()) throw new Exception("Сегментов нет");
 
         StringBuilder diag = new StringBuilder();
-        diag.append("segments=").append(segs.size()).append(" enc=").append(key != null).append("\n");
+        diag.append("segments=").append(segs.size())
+                .append(" enc=").append(key != null)
+                .append(" mediaSeq=").append(mediaSeq)
+                .append(" ivFixed=").append(ivFixed != null ? hex16(ivFixed, 0, 16) : "null")
+                .append("\n");
 
-        // --- сначала декодируем все сегменты в PCM в память (накапливаем) ---
         ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         int sampleRate = 44100, channels = 2, bits = 16;
         boolean fmtSet = false;
-        int seq = mediaSeq;
 
         for (int i = 0; i < segs.size(); i++) {
             String segUrl = new URL(new URL(baseUrl), segs.get(i)).toString();
             byte[] data = httpGetBytes(segUrl);
+            diag.append("raw[").append(i).append("]=").append(hex16(data, 0, 8)).append("\n");
+
             if (key != null) {
-                data = decryptSegment(data, key, ivFixed, mediaSeq, i);
+                data = decryptSegment(data, key, ivFixed, mediaSeq, i, diag, i);
             }
+            diag.append("dec[").append(i).append("]=").append(hex16(data, 0, 8)).append("\n");
 
             File tmp = new File(cacheDir, "seg_" + i + ".ts");
             try (FileOutputStream fo = new FileOutputStream(tmp)) { fo.write(data); }
-            diag.append("  hex[").append(i).append("]=").append(hex16(data, 0, 16)).append("\n");
 
-            // MediaExtractor + MediaCodec на сегменте
             long before = pcm.size();
             try {
                 int[] fmtOut = new int[3];
@@ -417,14 +431,13 @@ public class VKMusicActivity extends Activity {
                     }
                 }
             } catch (Exception ex) {
-                diag.append("seg").append(i).append(" in=").append(data.length)
-                        .append(" ERR=").append(ex.getMessage()).append("\n");
+                diag.append("  ERR[").append(i).append("]=").append(ex.getMessage()).append("\n");
             }
             tmp.delete();
             long added = pcm.size() - before;
             diag.append("seg").append(i).append(" in=").append(data.length)
                     .append(" pcm=").append(added).append("\n");
-            seq++;
+
             final int cur = i + 1;
             if ((i & 1) == 0) uiSetStatus("HLS: " + cur + "/" + segs.size() + " (pcm " + (pcm.size()/1024) + " КБ)");
         }
@@ -443,9 +456,56 @@ public class VKMusicActivity extends Activity {
         try (FileWriter fw = new FileWriter(diagFile)) { fw.write(diag.toString()); }
         catch (Exception ignored) {}
 
-        Log.i(TAG, "wav build: " + diag);
-        if (outWav.length() < 40000) throw new Exception("WAV мало: " + outWav.length() + "\n" + diag);
+        if (outWav.length() < 40000) throw new Exception("WAV мало: " + outWav.length());
         return outWav;
+    }
+
+    private byte[] decryptSegment(byte[] data, byte[] key, byte[] ivFixed, int seqBase, int segIdx,
+                                   StringBuilder diag, int idx) throws Exception {
+        if (key == null || data == null || data.length < 16) return data;
+
+        List<byte[]> candidates = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        if (ivFixed != null) { candidates.add(ivFixed); names.add("fixed"); }
+        candidates.add(seqToIv(seqBase + segIdx)); names.add("base+i");
+        candidates.add(seqToIv(segIdx)); names.add("i");
+        candidates.add(seqToIv(seqBase)); names.add("base");
+        candidates.add(new byte[16]); names.add("zero");
+
+        byte[] firstBlock = new byte[16];
+        System.arraycopy(data, 0, firstBlock, 0, 16);
+
+        for (int j = 0; j < candidates.size(); j++) {
+            byte[] iv = candidates.get(j);
+            try {
+                byte[] dec1 = aes128CbcDecrypt(firstBlock, key, iv);
+                String h = hex16(dec1, 0, 4);
+                boolean ok = isPlausibleHeader(dec1);
+                diag.append("  iv").append(idx).append("[").append(names.get(j)).append("]=")
+                        .append(h).append(ok ? " OK" : "").append("\n");
+                if (ok) {
+                    return aes128CbcDecrypt(data, key, iv);
+                }
+            } catch (Exception ex) {
+                diag.append("  iv").append(idx).append("[").append(names.get(j)).append("] EX=")
+                        .append(ex.getMessage()).append("\n");
+            }
+        }
+        diag.append("  iv").append(idx).append(" NO_MATCH\n");
+        return aes128CbcDecrypt(data, key, candidates.get(0));
+    }
+
+    private boolean isPlausibleHeader(byte[] b) {
+        if (b == null || b.length < 4) return false;
+        int u0 = b[0] & 0xFF;
+        int u1 = b[1] & 0xFF;
+        int u2 = b[2] & 0xFF;
+        int u3 = b[3] & 0xFF;
+        if (u0 == 0x47) return true;
+        if (u0 == 0x49 && u1 == 0x44 && u2 == 0x33) return true;
+        if (u0 == 0xFF && (u1 & 0xE0) == 0xE0) return true;
+        if (u0 == 0x66 && u1 == 0x74 && u2 == 0x79 && u3 == 0x70) return true;
+        return false;
     }
 
     private byte[] seqToIv(int seq) {
@@ -471,7 +531,7 @@ public class VKMusicActivity extends Activity {
                 break;
             }
         }
-        if (audioTrack < 0) { ex.release(); throw new Exception("no audio track"); }
+        if (audioTrack < 0) { ex.release(); throw new Exception("no audio"); }
         ex.selectTrack(audioTrack);
 
         String mime = fmt.getString(MediaFormat.KEY_MIME);
@@ -579,6 +639,15 @@ public class VKMusicActivity extends Activity {
         return out;
     }
 
+    private String hex16(byte[] data, int off, int len) {
+        if (data == null) return "null";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len && off + i < data.length; i++) {
+            sb.append(String.format("%02x", data[off + i]));
+        }
+        return sb.toString();
+    }
+
     private byte[] httpGetBytes(String urlStr) throws Exception {
         URL url = new URL(urlStr);
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
@@ -631,79 +700,6 @@ public class VKMusicActivity extends Activity {
                     .setPositiveButton("OK", null)
                     .show());
         });
-    }
-
-    private String hex16(byte[] data, int off, int len) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < len && off + i < data.length; i++) {
-            sb.append(String.format("%02x", data[off + i]));
-        }
-        return sb.toString();
-    }
-
-    /**
-     * Пробует разные IV и берёт тот, при котором расшифровка даёт
-     * валидный заголовок (TS 0x47, ID3, MP3 0xFF, ftyp).
-     */
-    private byte[] decryptSegment(byte[] data, byte[] key, byte[] ivFixed, int seqBase, int segIdx) throws Exception {
-        if (key == null || data == null || data.length < 16) return data;
-
-        List<byte[]> candidates = new ArrayList<>();
-        if (ivFixed != null) candidates.add(ivFixed);
-        candidates.add(seqToIv(seqBase + segIdx));
-        candidates.add(seqToIv(segIdx));
-        candidates.add(seqToIv(seqBase));
-        candidates.add(new byte[16]);
-
-        byte[] firstBlock = new byte[16];
-        System.arraycopy(data, 0, firstBlock, 0, 16);
-
-        for (byte[] iv : candidates) {
-            try {
-                byte[] dec1 = aes128CbcDecrypt(firstBlock, key, iv);
-                if (isPlausibleHeader(dec1)) {
-                    return aes128CbcDecrypt(data, key, iv);
-                }
-            } catch (Exception ignored) {}
-        }
-        // fallback — первый кандидат
-        return aes128CbcDecrypt(data, key, candidates.get(0));
-    }
-
-    private boolean isPlausibleHeader(byte[] b) {
-        if (b == null || b.length < 4) return false;
-        int u0 = b[0] & 0xFF;
-        int u1 = b[1] & 0xFF;
-        int u2 = b[2] & 0xFF;
-        int u3 = b[3] & 0xFF;
-        // TS sync
-        if (u0 == 0x47) return true;
-        // ID3v2
-        if (u0 == 0x49 && u1 == 0x44 && u2 == 0x33) return true;
-        // MP3 frame sync
-        if (u0 == 0xFF && (u1 & 0xE0) == 0xE0) return true;
-        // MP4 ftyp
-        if (u0 == 0x66 && u1 == 0x74 && u2 == 0x79 && u3 == 0x70) return true;
-        return false;
-    }
-
-    /**
-     * Принудительно пересобирает последний играемый трек, игнорируя кэш.
-     */
-    private void forceReprocess() {
-        File cacheDir = new File(getCacheDir(), "vk");
-        File[] files = cacheDir.listFiles();
-        int n = 0;
-        if (files != null) {
-            for (File f : files) {
-                if (f.getName().endsWith(".wav") || f.getName().endsWith(".diag")
-                        || f.getName().endsWith(".mp3") || f.getName().endsWith(".ts")) {
-                    if (f.delete()) n++;
-                }
-            }
-        }
-        Toast.makeText(this, "Удалено: " + n + ", тапни трек заново", Toast.LENGTH_LONG).show();
-        statusText.setText("Кэш очищен (" + n + "), тапни трек заново");
     }
 
     private void uiSetStatus(String s) {
