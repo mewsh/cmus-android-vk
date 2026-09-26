@@ -272,7 +272,18 @@ public class VKMusicActivity extends Activity {
         executor.execute(() -> {
             VKApi.ApiResult<List<VKApi.Audio>> r = VKApi.getAudio(token, 100, 0);
             runOnUiThread(() -> {
-                if (r.error != null) { statusText.setText("Ошибка: " + r.error); return; }
+                if (r.error != null) {
+                    String e = r.error.toLowerCase();
+                    if (e.contains("expired") || e.contains("authorization") || e.contains("token")) {
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(KEY_TOKEN).apply();
+                        token = null;
+                        Toast.makeText(this, "Токен истёк — войди заново", Toast.LENGTH_LONG).show();
+                        recreate();
+                        return;
+                    }
+                    statusText.setText("Ошибка: " + r.error);
+                    return;
+                }
                 if (r.data == null) { statusText.setText("Пустой ответ"); return; }
                 tracks.clear();
                 tracks.addAll(r.data);

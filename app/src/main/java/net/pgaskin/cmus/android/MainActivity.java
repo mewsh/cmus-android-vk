@@ -63,7 +63,16 @@ public class MainActivity extends Activity implements TerminalViewClient, CmusSe
     private static final String[] VIEW_NAMES = {
             "tree", "sorted", "playlist", "queue", "browser", "filters", "settings"};
     /** Views whose tab shows only while active (rarely used; clutter). */
-    private static final List<String> HIDDEN_TABS = List.of("filters", "settings");
+    private static final List<String> HIDDEN_TABS = List.of("sorted", "browser", "filters", "settings");
+    /** Отображаемые имена вкладок (русский). */
+    private static final java.util.Map<String,String> TAB_LABELS = java.util.Map.ofEntries(
+            java.util.Map.entry("tree", "Библиотека"),
+            java.util.Map.entry("sorted", "Сортировка"),
+            java.util.Map.entry("playlist", "Плейлисты"),
+            java.util.Map.entry("queue", "Очередь"),
+            java.util.Map.entry("browser", "Файлы"),
+            java.util.Map.entry("filters", "Фильтры"),
+            java.util.Map.entry("settings", "Настройки"));
     /** Inactive tab text: win_title_fg at ~55% alpha, blending toward bg. */
     private static final int INACTIVE_TAB_ALPHA = 0x8C;
     /** Floating (direct-touch) settings icon tint over the terminal. */
@@ -280,7 +289,7 @@ public class MainActivity extends Activity implements TerminalViewClient, CmusSe
         for (int i = 0; i < VIEW_NAMES.length; i++) {
             String name = VIEW_NAMES[i];
             TextView tab = new TextView(this);
-            tab.setText(name);
+            tab.setText(TAB_LABELS.getOrDefault(name, name));
             tab.setTypeface(activeTypeface, Typeface.BOLD); // stands out from the TUI text (Patrick)
             // slightly above the terminal font, tracking pinch-zoom (onScale)
             tab.setTextSize(TypedValue.COMPLEX_UNIT_PX, tabTextSize());
