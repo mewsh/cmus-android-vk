@@ -7,6 +7,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
+import android.media.MediaCodec;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -33,6 +36,7 @@ import java.io.FileWriter;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -289,17 +293,17 @@ public class VKMusicActivity extends Activity {
                 File cacheDir = new File(getCacheDir(), "vk");
                 if (!cacheDir.exists()) cacheDir.mkdirs();
                 final String base = "vk_" + audio.ownerId + "_" + audio.id;
-                File mp3 = new File(cacheDir, base + ".mp3");
+                File wav = new File(cacheDir, base + ".wav");
                 File diag = new File(cacheDir, base + ".diag");
 
                 File playFile;
-                if (mp3.exists() && mp3.length() > 10000) {
-                    playFile = mp3;
+                if (wav.exists() && wav.length() > 40000) {
+                    playFile = wav;
                 } else {
-                    if (mp3.exists()) mp3.delete();
+                    if (wav.exists()) wav.delete();
                     if (diag.exists()) diag.delete();
                     uiSetStatus("Скачиваю: " + audio.displayName());
-                    playFile = downloadAndBuildMp3(url, cacheDir, base, mp3, diag);
+                    playFile = downloadAndBuildWav(url, cacheDir, wav, diag);
                 }
                 if (playFile == null || !playFile.exists() || playFile.length() < 4096) {
                     uiSetStatus("Файл не готов"); return;
@@ -320,15 +324,11 @@ public class VKMusicActivity extends Activity {
         });
     }
 
-    private File downloadAndBuildMp3(String urlStr, File cacheDir, String base, File outMp3, File diagFile) throws Exception {
+    private File downloadAndBuildWav(String urlStr, File cacheDir, File outWav, File diagFile) throws Exception {
         byte[] head = httpGetBytes(urlStr);
         String headStr = new String(head, "UTF-8");
         if (!headStr.startsWith("#EXTM3U")) {
-            try (FileOutputStream fos = new FileOutputStream(outMp3)) {
-                fos.write(head);
-            }
-            if (outMp3.length() < 4096) throw new Exception("Прямой mp3 слишком мал: " + outMp3.length());
-            return outMp3;
+            throw new Exception("Не HLS: " + headStr.substring(0, Math.min(80, headStr.length())));
         }
 
         String manifest = headStr;
@@ -377,143 +377,184 @@ public class VKMusicActivity extends Activity {
         }
         if (segs.isEmpty()) throw new Exception("Сегментов нет");
 
-        StringBuilder diagLog = new StringBuilder();
-        diagLog.append("segments=").append(segs.size()).append(" encrypted=").append(key != null).append("\n");
+        StringBuilder diag = new StringBuilder();
+        diag.append("segments=").append(segs.size()).append(" enc=").append(key != null).append("\n");
 
-        try (FileOutputStream fos = new FileOutputStream(outMp3)) {
-            int seq = mediaSeq;
-            long totalMp3 = 0;
-            for (int i = 0; i < segs.size(); i++) {
-                String segUrl = new URL(new URL(baseUrl), segs.get(i)).toString();
-                byte[] data = httpGetBytes(segUrl);
-                if (key != null) {
-                    byte[] iv;
-                    if (ivFixed != null) {
-                        iv = ivFixed;
-                    } else {
-                        iv = new byte[16];
-                        iv[12] = (byte) ((seq >> 24) & 0xff);
-                        iv[13] = (byte) ((seq >> 16) & 0xff);
-                        iv[14] = (byte) ((seq >> 8) & 0xff);
-                        iv[15] = (byte) (seq & 0xff);
+        // --- сначала декодируем все сегменты в PCM в память (накапливаем) ---
+        ByteArrayOutputStream pcm = new ByteArrayOutputStream();
+        int sampleRate = 44100, channels = 2, bits = 16;
+        boolean fmtSet = false;
+        int seq = mediaSeq;
+
+        for (int i = 0; i < segs.size(); i++) {
+            String segUrl = new URL(new URL(baseUrl), segs.get(i)).toString();
+            byte[] data = httpGetBytes(segUrl);
+            if (key != null) {
+                byte[] iv = (ivFixed != null) ? ivFixed : seqToIv(seq);
+                data = aes128CbcDecrypt(data, key, iv);
+            }
+
+            File tmp = new File(cacheDir, "seg_" + i + ".ts");
+            try (FileOutputStream fo = new FileOutputStream(tmp)) { fo.write(data); }
+
+            // MediaExtractor + MediaCodec на сегменте
+            long before = pcm.size();
+            try {
+                int[] fmtOut = new int[3];
+                byte[] segPcm = decodeTsToPcm(tmp, fmtOut);
+                if (segPcm != null && segPcm.length > 0) {
+                    pcm.write(segPcm);
+                    if (!fmtSet && fmtOut[0] > 0) {
+                        sampleRate = fmtOut[0];
+                        channels = fmtOut[1];
+                        bits = fmtOut[2];
+                        fmtSet = true;
                     }
-                    data = aes128CbcDecrypt(data, key, iv);
                 }
-                int added = extractMp3Frames(data, fos);
-                totalMp3 += added;
-                diagLog.append("seg").append(i).append(" in=").append(data.length)
-                        .append(" mp3=").append(added).append("\n");
-                seq++;
-                final int cur = i + 1;
-                if ((i & 1) == 0) uiSetStatus("HLS: " + cur + "/" + segs.size());
+            } catch (Exception ex) {
+                diag.append("seg").append(i).append(" in=").append(data.length)
+                        .append(" ERR=").append(ex.getMessage()).append("\n");
             }
-            diagLog.append("total=").append(totalMp3).append("\n");
+            tmp.delete();
+            long added = pcm.size() - before;
+            diag.append("seg").append(i).append(" in=").append(data.length)
+                    .append(" pcm=").append(added).append("\n");
+            seq++;
+            final int cur = i + 1;
+            if ((i & 1) == 0) uiSetStatus("HLS: " + cur + "/" + segs.size() + " (pcm " + (pcm.size()/1024) + " КБ)");
         }
 
-        try (FileWriter fw = new FileWriter(diagFile)) {
-            fw.write(diagLog.toString());
-        } catch (Exception ignored) {}
+        byte[] pcmBytes = pcm.toByteArray();
+        diag.append("pcmTotal=").append(pcmBytes.length)
+                .append(" rate=").append(sampleRate)
+                .append(" ch=").append(channels)
+                .append(" bits=").append(bits).append("\n");
 
-        if (outMp3.length() < 10000) throw new Exception("MP3 мало: " + outMp3.length() + "\n" + diagLog);
-        return outMp3;
+        try (FileOutputStream fo = new FileOutputStream(outWav)) {
+            writeWavHeader(fo, pcmBytes.length, sampleRate, channels, bits);
+            fo.write(pcmBytes);
+        }
+
+        try (FileWriter fw = new FileWriter(diagFile)) { fw.write(diag.toString()); }
+        catch (Exception ignored) {}
+
+        Log.i(TAG, "wav build: " + diag);
+        if (outWav.length() < 40000) throw new Exception("WAV мало: " + outWav.length() + "\n" + diag);
+        return outWav;
     }
 
-    /**
-     * Сканирует сырые данные на MP3-кадры по синхрослову 0xFF Ex.
-     * Для надёжности проверяет, что следующий кадр начинается ровно
-     * через frame_size байт. Не зависит от TS-контейнера вообще.
-     */
-    private int extractMp3Frames(byte[] data, FileOutputStream out) throws Exception {
-        int written = 0;
-        int i = 0;
-        int consecutiveFails = 0;
-        while (i < data.length - 4) {
-            int b0 = data[i] & 0xFF;
-            int b1 = data[i + 1] & 0xFF;
-            if (b0 != 0xFF || (b1 & 0xE0) != 0xE0) {
-                i++;
-                consecutiveFails++;
-                if (consecutiveFails > 100000 && written > 1000000) break;
-                continue;
-            }
-            int versionBits = (b1 >> 3) & 0x03;
-            int layerBits = (b1 >> 1) & 0x03;
-            int b2 = data[i + 2] & 0xFF;
-            int bitrateIdx = (b2 >> 4) & 0x0F;
-            int srIdx = (b2 >> 2) & 0x03;
-            int padding = (b2 >> 1) & 0x01;
-
-            if (versionBits == 1 || layerBits == 0 || bitrateIdx == 0 || bitrateIdx == 15 || srIdx == 3) {
-                i++;
-                consecutiveFails++;
-                continue;
-            }
-            int frameSize = mp3FrameSize(versionBits, layerBits, bitrateIdx, srIdx, padding);
-            if (frameSize <= 4 || i + frameSize > data.length) {
-                i++;
-                consecutiveFails++;
-                continue;
-            }
-            int next = i + frameSize;
-            if (next + 2 < data.length) {
-                int nb0 = data[next] & 0xFF;
-                int nb1 = data[next + 1] & 0xFF;
-                if (nb0 != 0xFF || (nb1 & 0xE0) != 0xE0) {
-                    i++;
-                    consecutiveFails++;
-                    continue;
-                }
-            }
-            out.write(data, i, frameSize);
-            written += frameSize;
-            i += frameSize;
-            consecutiveFails = 0;
-        }
-        return written;
+    private byte[] seqToIv(int seq) {
+        byte[] iv = new byte[16];
+        iv[12] = (byte)((seq >> 24) & 0xff);
+        iv[13] = (byte)((seq >> 16) & 0xff);
+        iv[14] = (byte)((seq >> 8) & 0xff);
+        iv[15] = (byte)(seq & 0xff);
+        return iv;
     }
 
-    private int mp3FrameSize(int version, int layer, int bitrateIdx, int srIdx, int padding) {
-        // version: 3=MPEG1, 2=MPEG2, 0=MPEG2.5
-        // layer:   3=LayerI, 2=LayerII, 1=LayerIII
-        int[][] bitrateTables = {
-            // MPEG1: LayerI, LayerII, LayerIII
-            {0,32,64,96,128,160,192,224,256,288,320,352,384,416,448},
-            {0,32,48,56,64,80,96,112,128,160,192,224,256,320,384},
-            {0,32,40,48,56,64,80,96,112,128,160,192,224,256,320}
-        };
-        int[][] bitrateTables2 = {
-            // MPEG2/2.5: LayerI, LayerII/III
-            {0,32,48,56,64,80,96,112,128,144,160,176,192,224,256},
-            {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160},
-            {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160}
-        };
-        int[] srMpeg1 = {44100, 48000, 32000};
-        int[] srMpeg2 = {22050, 24000, 16000};
-        int[] srMpeg25 = {11025, 12000, 8000};
-
-        int layerGroup;
-        if (layer == 3) layerGroup = 0;
-        else if (layer == 2) layerGroup = 1;
-        else layerGroup = 2;
-
-        int bitrate;
-        int sampleRate;
-        if (version == 3) {
-            bitrate = bitrateTables[layerGroup][bitrateIdx];
-            sampleRate = srMpeg1[srIdx];
-        } else {
-            bitrate = bitrateTables2[layerGroup][bitrateIdx];
-            sampleRate = (version == 2) ? srMpeg2[srIdx] : srMpeg25[srIdx];
+    private byte[] decodeTsToPcm(File ts, int[] outFmt) throws Exception {
+        MediaExtractor ex = new MediaExtractor();
+        ex.setDataSource(ts.getAbsolutePath());
+        int audioTrack = -1;
+        MediaFormat fmt = null;
+        for (int i = 0; i < ex.getTrackCount(); i++) {
+            MediaFormat f = ex.getTrackFormat(i);
+            String mime = f.getString(MediaFormat.KEY_MIME);
+            if (mime != null && mime.startsWith("audio/")) {
+                audioTrack = i;
+                fmt = f;
+                break;
+            }
         }
-        if (bitrate == 0 || sampleRate == 0) return -1;
+        if (audioTrack < 0) { ex.release(); throw new Exception("no audio track"); }
+        ex.selectTrack(audioTrack);
 
-        if (layer == 3) {
-            // Layer I
-            return (12 * bitrate * 1000 / sampleRate + padding) * 4;
-        } else {
-            int coef = (version == 3) ? 144 : 72;
-            return coef * bitrate * 1000 / sampleRate + padding;
+        String mime = fmt.getString(MediaFormat.KEY_MIME);
+        MediaCodec dec = MediaCodec.createDecoderByType(mime);
+        dec.configure(fmt, null, null, 0);
+        dec.start();
+
+        ByteArrayOutputStream pcm = new ByteArrayOutputStream();
+        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+        boolean inputDone = false, outputDone = false;
+        int loops = 0;
+        int gotRate = 0, gotCh = 0, gotBits = 16;
+
+        while (!outputDone && loops < 200000) {
+            loops++;
+            if (!inputDone) {
+                int inIdx = dec.dequeueInputBuffer(10000);
+                if (inIdx >= 0) {
+                    ByteBuffer inBuf = dec.getInputBuffer(inIdx);
+                    inBuf.clear();
+                    int sz = ex.readSampleData(inBuf, 0);
+                    if (sz < 0) {
+                        dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        inputDone = true;
+                    } else {
+                        dec.queueInputBuffer(inIdx, 0, sz, ex.getSampleTime(), 0);
+                        ex.advance();
+                    }
+                }
+            }
+            int outIdx = dec.dequeueOutputBuffer(info, 10000);
+            if (outIdx >= 0) {
+                ByteBuffer outBuf = dec.getOutputBuffer(outIdx);
+                if (info.size > 0 && (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                    byte[] chunk = new byte[info.size];
+                    outBuf.position(info.offset);
+                    outBuf.limit(info.offset + info.size);
+                    outBuf.get(chunk);
+                    pcm.write(chunk);
+                }
+                dec.releaseOutputBuffer(outIdx, false);
+                if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true;
+            } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                MediaFormat of = dec.getOutputFormat();
+                if (of.containsKey(MediaFormat.KEY_SAMPLE_RATE)) gotRate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+                if (of.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) gotCh = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+                if (of.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                    int enc = of.getInteger(MediaFormat.KEY_PCM_ENCODING);
+                    gotBits = (enc == 4) ? 32 : 16;
+                }
+            }
         }
+        try { dec.stop(); } catch (Exception ignored) {}
+        dec.release();
+        ex.release();
+
+        outFmt[0] = gotRate;
+        outFmt[1] = gotCh;
+        outFmt[2] = gotBits;
+        return pcm.toByteArray();
+    }
+
+    private void writeWavHeader(FileOutputStream fo, int dataLen, int rate, int ch, int bits) throws Exception {
+        int byteRate = rate * ch * bits / 8;
+        int blockAlign = ch * bits / 8;
+        int fmtTag = (bits == 32) ? 3 : 1;
+
+        fo.write("RIFF".getBytes("US-ASCII"));
+        writeIntLE(fo, 36 + dataLen);
+        fo.write("WAVE".getBytes("US-ASCII"));
+        fo.write("fmt ".getBytes("US-ASCII"));
+        writeIntLE(fo, 16);
+        writeShortLE(fo, (short) fmtTag);
+        writeShortLE(fo, (short) ch);
+        writeIntLE(fo, rate);
+        writeIntLE(fo, byteRate);
+        writeShortLE(fo, (short) blockAlign);
+        writeShortLE(fo, (short) bits);
+        fo.write("data".getBytes("US-ASCII"));
+        writeIntLE(fo, dataLen);
+    }
+
+    private void writeIntLE(FileOutputStream fo, int v) throws Exception {
+        fo.write(v & 0xff); fo.write((v >> 8) & 0xff);
+        fo.write((v >> 16) & 0xff); fo.write((v >> 24) & 0xff);
+    }
+    private void writeShortLE(FileOutputStream fo, short v) throws Exception {
+        fo.write(v & 0xff); fo.write((v >> 8) & 0xff);
     }
 
     private byte[] aes128CbcDecrypt(byte[] data, byte[] key, byte[] iv) throws Exception {
