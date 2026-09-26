@@ -291,29 +291,16 @@ public class VKMusicActivity extends Activity {
                 if (!cacheDir.exists()) cacheDir.mkdirs();
                 final String base = "vk_" + audio.ownerId + "_" + audio.id;
                 File mp3 = new File(cacheDir, base + ".mp3");
-                File ts  = new File(cacheDir, base + ".ts");
+                File diag = new File(cacheDir, base + ".diag");
 
                 File playFile;
                 if (mp3.exists() && mp3.length() > 10000) {
                     playFile = mp3;
                 } else {
-                    if (ts.exists() && ts.length() > 10000) {
-                        uiSetStatus("Распаковка .ts -> .mp3...");
-                        tsToMp3(ts, mp3);
-                        playFile = mp3;
-                    } else {
-                        if (ts.exists()) ts.delete();
-                        if (mp3.exists()) mp3.delete();
-                        uiSetStatus("Скачиваю: " + audio.displayName());
-                        File dl = downloadAndPrepare(url, cacheDir, base);
-                        if (dl.getName().endsWith(".ts")) {
-                            uiSetStatus("Распаковка .ts -> .mp3...");
-                            tsToMp3(dl, mp3);
-                            playFile = mp3;
-                        } else {
-                            playFile = dl;
-                        }
-                    }
+                    if (mp3.exists()) mp3.delete();
+                    if (diag.exists()) diag.delete();
+                    uiSetStatus("Скачиваю: " + audio.displayName());
+                    playFile = downloadAndBuildMp3(url, cacheDir, base, mp3, diag);
                 }
                 if (playFile == null || !playFile.exists() || playFile.length() < 4096) {
                     uiSetStatus("Файл не готов"); return;
@@ -334,27 +321,28 @@ public class VKMusicActivity extends Activity {
         });
     }
 
-    private File downloadAndPrepare(String urlStr, File cacheDir, String base) throws Exception {
+    /**
+     * Скачивает URL. Если это HLS-манифест — качает каждый сегмент отдельно
+     * и сразу конвертирует в MP3-байты, клеит их в outMp3.
+     * Если это прямой mp3 — просто сохраняет.
+     */
+    private File downloadAndBuildMp3(String urlStr, File cacheDir, String base, File outMp3, File diagFile) throws Exception {
         byte[] head = httpGetBytes(urlStr);
         String headStr = new String(head, "UTF-8");
-        if (headStr.startsWith("#EXTM3U")) {
-            File out = new File(cacheDir, base + ".ts");
-            downloadHlsFromManifest(urlStr, headStr, out);
-            return out;
-        } else {
-            File out = new File(cacheDir, base + ".mp3");
-            try (FileOutputStream fos = new FileOutputStream(out)) {
+        if (!headStr.startsWith("#EXTM3U")) {
+            try (FileOutputStream fos = new FileOutputStream(outMp3)) {
                 fos.write(head);
             }
-            if (out.length() < 4096) {
+            if (outMp3.length() < 4096) {
                 String preview = new String(head, 0, Math.min(head.length, 300), "UTF-8").replaceAll("\\s+", " ");
-                throw new Exception("Мало (" + out.length() + "b): " + preview);
+                throw new Exception("Мало (" + outMp3.length() + "b): " + preview);
             }
-            return out;
+            return outMp3;
         }
-    }
 
-    private void downloadHlsFromManifest(String baseUrl, String manifest, File out) throws Exception {
+        // HLS
+        String manifest = headStr;
+        String baseUrl = urlStr;
         if (manifest.contains("#EXT-X-STREAM-INF")) {
             String media = null;
             String[] lines = manifest.split("\n");
@@ -399,10 +387,12 @@ public class VKMusicActivity extends Activity {
         }
         if (segs.isEmpty()) throw new Exception("Сегментов нет");
 
-        uiSetStatus("HLS: сегментов " + segs.size());
+        StringBuilder diagLog = new StringBuilder();
+        diagLog.append("segments=").append(segs.size()).append(" encrypted=").append(key != null).append("\n");
 
-        try (FileOutputStream fos = new FileOutputStream(out)) {
+        try (FileOutputStream fos = new FileOutputStream(outMp3)) {
             int seq = mediaSeq;
+            long totalMp3 = 0;
             for (int i = 0; i < segs.size(); i++) {
                 String segUrl = new URL(new URL(baseUrl), segs.get(i)).toString();
                 byte[] data = httpGetBytes(segUrl);
@@ -419,13 +409,109 @@ public class VKMusicActivity extends Activity {
                     }
                     data = aes128CbcDecrypt(data, key, iv);
                 }
-                fos.write(data);
+                int before = (int) totalMp3;
+                int added = extractMp3FromTsSegment(data, fos);
+                totalMp3 += added;
+                diagLog.append("seg").append(i).append(" in=").append(data.length)
+                        .append(" mp3=").append(added).append("\n");
                 seq++;
-                if ((i & 3) == 0) uiSetStatus("HLS: " + (i + 1) + "/" + segs.size());
+                final int cur = i + 1;
+                if ((i & 1) == 0) uiSetStatus("HLS: " + cur + "/" + segs.size());
+            }
+            diagLog.append("total=").append(totalMp3).append("\n");
+        }
+
+        try (FileWriter fw = new FileWriter(diagFile)) {
+            fw.write(diagLog.toString());
+        } catch (Exception ignored) {}
+
+        if (outMp3.length() < 10000) throw new Exception("MP3 мало: " + outMp3.length() + "\n" + diagLog);
+        return outMp3;
+    }
+
+    /**
+     * Извлекает MP3-байты из одного HLS-сегмента (TS или M2TS).
+     * Автодетект: 188 (TS) или 192 (M2TS с 4-байтовым префиксом).
+     * Возвращает сколько байт дописано в out.
+     */
+    private int extractMp3FromTsSegment(byte[] data, FileOutputStream out) throws Exception {
+        // --- детект выравнивания ---
+        int bestSize = 188, bestOffset = 0, bestHits = 0;
+        int scanLimit = Math.min(data.length, 192 * 300);
+        for (int size : new int[]{188, 192}) {
+            for (int off = 0; off < size && off < data.length; off++) {
+                int hits = 0, total = 0;
+                for (int p = off; p < scanLimit; p += size) {
+                    total++;
+                    if (data[p] == 0x47) hits++;
+                }
+                if (total == 0) continue;
+                int ratio = hits * 100 / total;
+                if (ratio > 80 && hits > bestHits) { bestHits = hits; bestSize = size; bestOffset = off; }
             }
         }
-        if (out.length() < 10000) throw new Exception("Склеено мало: " + out.length());
-        Log.i(TAG, "HLS done: " + out.length() + " bytes");
+        int prefixLen = bestSize - 188;
+        int start = bestOffset - prefixLen;
+        if (start < 0) start = 0;
+
+        // --- PID-статистика ---
+        int[] pidBytes = new int[8192];
+        for (int pos = start; pos + bestSize <= data.length; pos += bestSize) {
+            int ts = pos + prefixLen;
+            if (data[ts] != 0x47) continue;
+            int pid = ((data[ts+1] & 0x1F) << 8) | (data[ts+2] & 0xFF);
+            pidBytes[pid] += 188;
+        }
+        int topPid = -1, topBytes = 0;
+        for (int i = 0; i < 8192; i++) {
+            if (pidBytes[i] > topBytes) { topBytes = pidBytes[i]; topPid = i; }
+        }
+        if (topPid < 0) return 0;
+
+        // --- извлечение ---
+        int written = 0;
+        ByteArrayOutputStream pesBuf = new ByteArrayOutputStream();
+        for (int pos = start; pos + bestSize <= data.length; pos += bestSize) {
+            int ts = pos + prefixLen;
+            if (data[ts] != 0x47) continue;
+            int pid = ((data[ts+1] & 0x1F) << 8) | (data[ts+2] & 0xFF);
+            if (pid != topPid) continue;
+            boolean pusi = (data[ts+1] & 0x40) != 0;
+            int afc = (data[ts+3] >> 4) & 0x03;
+            if (afc == 0 || afc == 2) continue;
+            int payloadStart = 4;
+            if (afc == 3) {
+                int afLen = data[ts+4] & 0xFF;
+                payloadStart = 5 + afLen;
+            }
+            if (payloadStart >= 188) continue;
+
+            if (pusi && pesBuf.size() > 0) {
+                written += flushPesToMp3(pesBuf.toByteArray(), out);
+                pesBuf.reset();
+            }
+            pesBuf.write(data, ts + payloadStart, 188 - payloadStart);
+        }
+        if (pesBuf.size() > 0) {
+            written += flushPesToMp3(pesBuf.toByteArray(), out);
+        }
+        return written;
+    }
+
+    private int flushPesToMp3(byte[] pes, FileOutputStream out) throws Exception {
+        if (pes.length < 9) return 0;
+        if (!(pes[0] == 0 && pes[1] == 0 && pes[2] == 1)) {
+            out.write(pes);
+            return pes.length;
+        }
+        int sid = pes[3] & 0xFF;
+        if (!((sid >= 0xC0 && sid <= 0xDF) || sid == 0xBD)) return 0;
+        int headerLen = pes[8] & 0xFF;
+        int off = 9 + headerLen;
+        if (off >= pes.length) return 0;
+        int len = pes.length - off;
+        out.write(pes, off, len);
+        return len;
     }
 
     private byte[] aes128CbcDecrypt(byte[] data, byte[] key, byte[] iv) throws Exception {
@@ -466,115 +552,6 @@ public class VKMusicActivity extends Activity {
             while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
             return bos.toByteArray();
         }
-    }
-
-    /**
-     * Распаковка MPEG-TS -> MP3 с устойчивым поиском sync-байт.
-     * Не полагаемся на глобальное выравнивание: сканируем файл побайтово,
-     * ищем тройки 0x47 через 188 и 376 байт, и только оттуда шагаем.
-     * Это работает даже если HLS-сегменты склеены со сдвигом.
-     */
-    private void tsToMp3(File tsFile, File mp3File) throws Exception {
-        byte[] data = new byte[(int) tsFile.length()];
-        try (FileInputStream in = new FileInputStream(tsFile)) {
-            int rd = 0;
-            while (rd < data.length) {
-                int n = in.read(data, rd, data.length - rd);
-                if (n < 0) break;
-                rd += n;
-            }
-        }
-
-        // --- проход 1: PID-статистика по валидным sync-тройкам ---
-        int[] pidBytes = new int[8192];
-        int totalSyncPkts = 0;
-        int pos = 0;
-        while (pos + 188 * 3 <= data.length) {
-            if (data[pos] == 0x47 && data[pos + 188] == 0x47 && data[pos + 376] == 0x47) {
-                int pid = ((data[pos + 1] & 0x1F) << 8) | (data[pos + 2] & 0xFF);
-                pidBytes[pid] += 188;
-                totalSyncPkts++;
-                pos += 188;
-            } else {
-                pos += 1;
-            }
-        }
-        int topPid = -1, topBytes = 0;
-        StringBuilder pidLog = new StringBuilder();
-        for (int i = 0; i < 8192; i++) {
-            if (pidBytes[i] > 0) {
-                if (pidLog.length() < 400) pidLog.append(i).append(":").append(pidBytes[i]).append(" ");
-                if (pidBytes[i] > topBytes) { topBytes = pidBytes[i]; topPid = i; }
-            }
-        }
-        if (topPid < 0) throw new Exception("sync-пакетов нет, totalSyncPkts=" + totalSyncPkts);
-
-        // --- проход 2: извлекаем пакеты topPid ---
-        ByteArrayOutputStream pesBuf = new ByteArrayOutputStream();
-        int pesCount = 0, takenPkts = 0;
-        try (FileOutputStream out = new FileOutputStream(mp3File)) {
-            pos = 0;
-            while (pos + 188 <= data.length) {
-                if (data[pos] != 0x47) { pos += 1; continue; }
-                // подтвердить что это sync: через 188 тоже 0x47 (если хватает длины)
-                if (pos + 376 <= data.length && data[pos + 188] != 0x47) {
-                    pos += 1; continue;
-                }
-                int pid = ((data[pos + 1] & 0x1F) << 8) | (data[pos + 2] & 0xFF);
-                if (pid != topPid) { pos += 188; continue; }
-                takenPkts++;
-                boolean pusi = (data[pos + 1] & 0x40) != 0;
-                int afc = (data[pos + 3] >> 4) & 0x03;
-                if (afc == 0 || afc == 2) { pos += 188; continue; }
-                int payloadStart = 4;
-                if (afc == 3) {
-                    int afLen = data[pos + 4] & 0xFF;
-                    payloadStart = 5 + afLen;
-                }
-                if (payloadStart >= 188) { pos += 188; continue; }
-                if (pusi && pesBuf.size() > 0) {
-                    flushPesToMp3(pesBuf.toByteArray(), out);
-                    pesBuf.reset();
-                    pesCount++;
-                }
-                pesBuf.write(data, pos + payloadStart, 188 - payloadStart);
-                pos += 188;
-            }
-            if (pesBuf.size() > 0) { flushPesToMp3(pesBuf.toByteArray(), out); pesCount++; }
-        }
-
-        String diag = "totalSyncPkts=" + totalSyncPkts + " topPid=" + topPid + " pidBytes=" + topBytes
-                + "\ntakenPkts=" + takenPkts + " pesCount=" + pesCount + " outBytes=" + mp3File.length()
-                + "\npids=" + pidLog.toString();
-
-        try (FileWriter fw = new FileWriter(new File(mp3File.getParentFile(), mp3File.getName() + ".diag"))) {
-            fw.write(diag);
-        } catch (Exception ignored) {}
-
-        Log.i(TAG, "tsToMp3: " + diag);
-        if (mp3File.length() < 10000) throw new Exception("MP3 мало: " + mp3File.length() + " | " + diag);
-    }
-
-    private String hex16(byte[] data, int off, int len) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < len && off + i < data.length; i++) {
-            sb.append(String.format("%02x", data[off + i]));
-        }
-        return sb.toString();
-    }
-
-    private void flushPesToMp3(byte[] pes, FileOutputStream out) throws Exception {
-        if (pes.length < 9) return;
-        if (!(pes[0] == 0 && pes[1] == 0 && pes[2] == 1)) {
-            out.write(pes);
-            return;
-        }
-        int sid = pes[3] & 0xFF;
-        if (!((sid >= 0xC0 && sid <= 0xDF) || sid == 0xBD)) return;
-        int headerLen = pes[8] & 0xFF;
-        int off = 9 + headerLen;
-        if (off >= pes.length) return;
-        out.write(pes, off, pes.length - off);
     }
 
     private void showInfo() {
