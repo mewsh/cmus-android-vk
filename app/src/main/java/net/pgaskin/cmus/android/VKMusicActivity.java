@@ -462,7 +462,16 @@ public class VKMusicActivity extends Activity {
 
     private byte[] decryptSegment(byte[] data, byte[] key, byte[] ivFixed, int seqBase, int segIdx,
                                    StringBuilder diag, int idx) throws Exception {
-        if (key == null || data == null || data.length < 16) return data;
+        if (data == null || data.length < 16) return data;
+
+        // Если данные уже в открытом виде (TS/ID3/MP3/ftyp) — не расшифровываем.
+        if (isPlausibleHeader(data)) {
+            diag.append("  iv").append(idx).append("[plain]=").append(hex16(data, 0, 4))
+                    .append(" OK (no decrypt)\n");
+            return data;
+        }
+
+        if (key == null) return data;
 
         List<byte[]> candidates = new ArrayList<>();
         List<String> names = new ArrayList<>();
