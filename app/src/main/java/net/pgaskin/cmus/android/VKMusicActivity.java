@@ -124,6 +124,11 @@ public class VKMusicActivity extends Activity {
         });
         btns.addView(clearBtn);
 
+        Button reprocessBtn = new Button(this);
+        reprocessBtn.setText("Reprocess");
+        reprocessBtn.setOnClickListener(v -> forceReprocess());
+        btns.addView(reprocessBtn);
+
         Button infoBtn = new Button(this);
         infoBtn.setText("Info");
         infoBtn.setOnClickListener(v -> showInfo());
@@ -680,6 +685,25 @@ public class VKMusicActivity extends Activity {
         // MP4 ftyp
         if (u0 == 0x66 && u1 == 0x74 && u2 == 0x79 && u3 == 0x70) return true;
         return false;
+    }
+
+    /**
+     * Принудительно пересобирает последний играемый трек, игнорируя кэш.
+     */
+    private void forceReprocess() {
+        File cacheDir = new File(getCacheDir(), "vk");
+        File[] files = cacheDir.listFiles();
+        int n = 0;
+        if (files != null) {
+            for (File f : files) {
+                if (f.getName().endsWith(".wav") || f.getName().endsWith(".diag")
+                        || f.getName().endsWith(".mp3") || f.getName().endsWith(".ts")) {
+                    if (f.delete()) n++;
+                }
+            }
+        }
+        Toast.makeText(this, "Удалено: " + n + ", тапни трек заново", Toast.LENGTH_LONG).show();
+        statusText.setText("Кэш очищен (" + n + "), тапни трек заново");
     }
 
     private void uiSetStatus(String s) {
