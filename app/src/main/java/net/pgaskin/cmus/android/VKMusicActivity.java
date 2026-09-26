@@ -305,8 +305,9 @@ public class VKMusicActivity extends Activity {
                 if (!cacheDir.exists()) cacheDir.mkdirs();
 
                 boolean force = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_FORCE, false);
-                String base = "vk_" + audio.ownerId + "_" + audio.id
-                        + (force ? ("_" + System.currentTimeMillis()) : "");
+                String safeName = sanitizeFileName(audio.artist + " - " + audio.title);
+                if (safeName.isEmpty()) safeName = "vk_" + audio.ownerId + "_" + audio.id;
+                String base = safeName + (force ? ("_" + System.currentTimeMillis()) : "");
 
                 File wav = new File(cacheDir, base + ".wav");
                 File diag = new File(cacheDir, base + ".diag");
@@ -327,11 +328,13 @@ public class VKMusicActivity extends Activity {
                 final String path = playFile.getAbsolutePath();
                 final String display = audio.displayName();
                 final long sz = playFile.length() / 1024;
+                long totalSec = (playFile.length() - 44) / (44100L * 2L * 2L);
+                final String durStr = (totalSec / 60) + ":" + String.format("%02d", totalSec % 60);
                 runOnUiThread(() -> {
                     ipc.send("add -q " + path);
                     ipc.send("view queue");
                     ipc.send("player-play");
-                    statusText.setText("Играю: " + display + " (" + sz + " КБ)");
+                    statusText.setText("Играю: " + display + " (" + durStr + ", " + sz + " КБ)");
                 });
             } catch (Exception e) {
                 Log.e(TAG, "playTrack failed", e);
@@ -709,6 +712,15 @@ public class VKMusicActivity extends Activity {
                     .setPositiveButton("OK", null)
                     .show());
         });
+    }
+
+    private String sanitizeFileName(String name) {
+        if (name == null) return "";
+        String s = name.replaceAll("[\\\\/:*?\"<>|]", "_")
+                       .replaceAll("\\s+", " ")
+                       .trim();
+        if (s.length() > 100) s = s.substring(0, 100).trim();
+        return s;
     }
 
     private void uiSetStatus(String s) {
