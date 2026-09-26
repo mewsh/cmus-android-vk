@@ -43,6 +43,71 @@ public class VKApi {
         public String error;
     }
 
+    public static ApiResult<Integer> getUserId(String token) {
+        ApiResult<Integer> result = new ApiResult<>();
+        try {
+            String url = "https://api.vk.com/method/users.get"
+                    + "?access_token=" + URLEncoder.encode(token, "UTF-8")
+                    + "&v=" + API_VERSION;
+            JSONObject json = httpGet(url);
+            if (json.has("error")) {
+                result.error = json.getJSONObject("error").optString("error_msg", "unknown");
+                return result;
+            }
+            JSONArray arr = json.optJSONArray("response");
+            if (arr == null || arr.length() == 0) {
+                result.error = "Пустой users.get";
+                return result;
+            }
+            result.data = arr.getJSONObject(0).optInt("id");
+            return result;
+        } catch (Exception e) {
+            Log.e(TAG, "getUserId failed", e);
+            result.error = e.getMessage();
+            return result;
+        }
+    }
+
+    public static ApiResult<List<Playlist>> getPlaylistsWithOwner(String token, int ownerId) {
+        ApiResult<List<Playlist>> result = new ApiResult<>();
+        try {
+            String url = "https://api.vk.com/method/audio.getPlaylists"
+                    + "?access_token=" + URLEncoder.encode(token, "UTF-8")
+                    + "&v=" + API_VERSION
+                    + "&owner_id=" + ownerId
+                    + "&count=100";
+            JSONObject json = httpGet(url);
+            if (json.has("error")) {
+                result.error = json.getJSONObject("error").optString("error_msg", "unknown");
+                return result;
+            }
+            Object respObj = json.opt("response");
+            JSONArray items = null;
+            if (respObj instanceof JSONObject) items = ((JSONObject) respObj).optJSONArray("items");
+            else if (respObj instanceof JSONArray) items = (JSONArray) respObj;
+
+            List<Playlist> out = new ArrayList<>();
+            if (items != null) {
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject it = items.getJSONObject(i);
+                    Playlist p = new Playlist();
+                    p.id = it.optInt("id");
+                    p.ownerId = it.optInt("owner_id", ownerId);
+                    p.title = it.optString("title", "?");
+                    p.size = it.optInt("size", 0);
+                    p.photo = it.optString("photo_300", it.optString("photo_600", ""));
+                    out.add(p);
+                }
+            }
+            result.data = out;
+            return result;
+        } catch (Exception e) {
+            Log.e(TAG, "getPlaylistsWithOwner failed", e);
+            result.error = e.getMessage();
+            return result;
+        }
+    }
+
     public static ApiResult<List<Playlist>> getPlaylists(String token) {
         ApiResult<List<Playlist>> result = new ApiResult<>();
         try {

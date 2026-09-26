@@ -111,8 +111,10 @@ public class VKMusicActivity extends Activity {
         Button logoutBtn = new Button(this);
         logoutBtn.setText("Сбросить");
         logoutBtn.setOnClickListener(v -> {
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(KEY_TOKEN).apply();
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .remove(KEY_TOKEN).remove("user_id").apply();
             token = null;
+            userId = 0;
             recreate();
         });
         btns.addView(logoutBtn);
@@ -303,13 +305,32 @@ public class VKMusicActivity extends Activity {
         statusText.setText("Мои треки: " + tracks.size());
     }
 
+    private int userId = 0;
+
+    private int ensureUserId() {
+        if (userId > 0) return userId;
+        int saved = getSharedPreferences(PREFS, MODE_PRIVATE).getInt("user_id", 0);
+        if (saved > 0) { userId = saved; return userId; }
+        VKApi.ApiResult<Integer> r = VKApi.getUserId(token);
+        if (r.data != null && r.data > 0) {
+            userId = r.data;
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putInt("user_id", userId).apply();
+        }
+        return userId;
+    }
+
     private void switchToPlaylists() {
         showingPlaylists = true;
         currentIsLibrary = false;
         statusText.setText("Загрузка плейлистов...");
         if (adapter != null) adapter.clear();
         executor.execute(() -> {
-            VKApi.ApiResult<List<VKApi.Playlist>> r = VKApi.getPlaylists(token);
+            int uid = ensureUserId();
+            if (uid <= 0) {
+                uiSetStatus("Не удалось получить user_id");
+                return;
+            }
+            VKApi.ApiResult<List<VKApi.Playlist>> r = VKApi.getPlaylistsWithOwner(token, uid);
             runOnUiThread(() -> {
                 if (r.error != null) {
                     String e = r.error.toLowerCase();
@@ -337,7 +358,8 @@ public class VKMusicActivity extends Activity {
     private void openPlaylist(VKApi.Playlist p) {
         statusText.setText("Загрузка: " + p.title);
         executor.execute(() -> {
-            VKApi.ApiResult<List<VKApi.Audio>> r = VKApi.getAudioFromPlaylist(token, p.id, p.ownerId, 200);
+            int ownerForPlaylist = p.ownerId > 0 ? p.ownerId : ensureUserId();
+            VKApi.ApiResult<List<VKApi.Audio>> r = VKApi.getAudioFromPlaylist(token, p.id, ownerForPlaylist, 200);
             runOnUiThread(() -> {
                 if (r.error != null) {
                     statusText.setText("Ошибка: " + r.error);
