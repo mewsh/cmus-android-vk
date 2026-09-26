@@ -473,42 +473,45 @@ public class VKMusicActivity extends Activity {
     }
 
     private int mp3FrameSize(int version, int layer, int bitrateIdx, int srIdx, int padding) {
-        int[][][] bitrateTables = {
-            // MPEG 1
-            {
-                {0,32,64,96,128,160,192,224,256,288,320,352,384,416,448},
-                {0,32,48,56,64,80,96,112,128,160,192,224,256,320,384},
-                {0,32,40,48,56,64,80,96,112,128,160,192,224,256,320}
-            },
-            // MPEG 2/2.5
-            {
-                {0,32,48,56,64,80,96,112,128,144,160,176,192,224,256},
-                {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160},
-                {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160}
-            }
+        // version: 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+        // layer:   3=LayerI, 2=LayerII, 1=LayerIII
+        int[][] bitrateTables = {
+            // MPEG1: LayerI, LayerII, LayerIII
+            {0,32,64,96,128,160,192,224,256,288,320,352,384,416,448},
+            {0,32,48,56,64,80,96,112,128,160,192,224,256,320,384},
+            {0,32,40,48,56,64,80,96,112,128,160,192,224,256,320}
         };
-        int[][][] sampleRateTables = {
-            {44100, 48000, 32000},
-            {22050, 24000, 16000},
-            {11025, 12000, 8000}
+        int[][] bitrateTables2 = {
+            // MPEG2/2.5: LayerI, LayerII/III
+            {0,32,48,56,64,80,96,112,128,144,160,176,192,224,256},
+            {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160},
+            {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160}
         };
-        int versionGroup = (version == 3) ? 0 : 1; // 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+        int[] srMpeg1 = {44100, 48000, 32000};
+        int[] srMpeg2 = {22050, 24000, 16000};
+        int[] srMpeg25 = {11025, 12000, 8000};
+
         int layerGroup;
-        if (layer == 3) layerGroup = 0;      // Layer I
-        else if (layer == 2) layerGroup = 1; // Layer II
-        else layerGroup = 2;                 // Layer III
+        if (layer == 3) layerGroup = 0;
+        else if (layer == 2) layerGroup = 1;
+        else layerGroup = 2;
 
-        int bitrate = bitrateTables[versionGroup][layerGroup][bitrateIdx];
-        if (bitrate == 0) return -1;
-        int sampleRate = sampleRateTables[versionGroup == 0 ? 0 : (version == 2 ? 1 : 2)][srIdx];
-        if (sampleRate == 0) return -1;
+        int bitrate;
+        int sampleRate;
+        if (version == 3) {
+            bitrate = bitrateTables[layerGroup][bitrateIdx];
+            sampleRate = srMpeg1[srIdx];
+        } else {
+            bitrate = bitrateTables2[layerGroup][bitrateIdx];
+            sampleRate = (version == 2) ? srMpeg2[srIdx] : srMpeg25[srIdx];
+        }
+        if (bitrate == 0 || sampleRate == 0) return -1;
 
-        if (layerGroup == 0) {
+        if (layer == 3) {
             // Layer I
             return (12 * bitrate * 1000 / sampleRate + padding) * 4;
         } else {
-            // Layer II/III
-            int coef = (versionGroup == 0) ? 144 : 72;
+            int coef = (version == 3) ? 144 : 72;
             return coef * bitrate * 1000 / sampleRate + padding;
         }
     }
