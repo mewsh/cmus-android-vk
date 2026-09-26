@@ -538,8 +538,10 @@ public class VKMusicActivity extends Activity {
         final byte[][] segRaw = new byte[segs.size()][];
         final byte[][] segDec = new byte[segs.size()][];
         final String[] segErrors = new String[segs.size()];
-        final int[] segSeq = new int[segs.size()];
         final String baseUrlF = baseUrl;
+        final byte[] keyF = key;
+        final byte[] ivFixedF = ivFixed;
+        final int mediaSeqF = mediaSeq;
 
         java.util.List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
         for (int i = 0; i < segs.size(); i++) {
@@ -549,14 +551,13 @@ public class VKMusicActivity extends Activity {
                     String segUrl = new URL(new URL(baseUrlF), segs.get(idx)).toString();
                     byte[] data = httpGetBytes(segUrl);
                     segRaw[idx] = data;
-                    if (key != null) {
-                        data = decryptSegment(data, key, ivFixed, mediaSeq, idx, null, idx);
+                    if (keyF != null) {
+                        data = decryptSegment(data, keyF, ivFixedF, mediaSeqF, idx, null, idx);
                     }
                     segDec[idx] = data;
                     File tmp = new File(cacheDir, "seg_" + idx + ".ts");
                     try (FileOutputStream fo = new FileOutputStream(tmp)) { fo.write(data); }
                     segFiles[idx] = tmp;
-                    segSeq[idx] = mediaSeq + idx;
                 } catch (Exception ex) {
                     segErrors[idx] = ex.getMessage();
                 }
