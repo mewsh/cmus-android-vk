@@ -17,6 +17,14 @@ public class VKApi {
     private static final String API_VERSION = "5.131";
     private static final String UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
+    public static class Playlist {
+        public int id;
+        public int ownerId;
+        public String title;
+        public int size;
+        public String photo;
+    }
+
     public static class Audio {
         public int id;
         public int ownerId;
@@ -33,6 +41,95 @@ public class VKApi {
     public static class ApiResult<T> {
         public T data;
         public String error;
+    }
+
+    public static ApiResult<List<Playlist>> getPlaylists(String token) {
+        ApiResult<List<Playlist>> result = new ApiResult<>();
+        try {
+            String url = "https://api.vk.com/method/audio.getPlaylists"
+                    + "?access_token=" + URLEncoder.encode(token, "UTF-8")
+                    + "&v=" + API_VERSION
+                    + "&count=100";
+            JSONObject json = httpGet(url);
+            if (json.has("error")) {
+                result.error = json.getJSONObject("error").optString("error_msg", "unknown");
+                return result;
+            }
+            if (!json.has("response")) {
+                result.error = "Нет response: " + json.toString();
+                return result;
+            }
+            Object respObj = json.get("response");
+            JSONArray items = null;
+            if (respObj instanceof JSONObject) items = ((JSONObject) respObj).optJSONArray("items");
+            else if (respObj instanceof JSONArray) items = (JSONArray) respObj;
+
+            List<Playlist> out = new ArrayList<>();
+            if (items != null) {
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject it = items.getJSONObject(i);
+                    Playlist p = new Playlist();
+                    p.id = it.optInt("id");
+                    p.ownerId = it.optInt("owner_id");
+                    p.title = it.optString("title", "?");
+                    p.size = it.optInt("size", 0);
+                    p.photo = it.optString("photo_300", it.optString("photo_600", ""));
+                    out.add(p);
+                }
+            }
+            result.data = out;
+            return result;
+        } catch (Exception e) {
+            Log.e(TAG, "getPlaylists failed", e);
+            result.error = e.getMessage();
+            return result;
+        }
+    }
+
+    public static ApiResult<List<Audio>> getAudioFromPlaylist(String token, int playlistId, int ownerId, int count) {
+        ApiResult<List<Audio>> result = new ApiResult<>();
+        try {
+            String url = "https://api.vk.com/method/audio.get"
+                    + "?access_token=" + URLEncoder.encode(token, "UTF-8")
+                    + "&v=" + API_VERSION
+                    + "&count=" + count
+                    + "&playlist_id=" + playlistId
+                    + "&owner_id=" + ownerId;
+            JSONObject json = httpGet(url);
+            if (json.has("error")) {
+                result.error = json.getJSONObject("error").optString("error_msg", "unknown");
+                return result;
+            }
+            if (!json.has("response")) {
+                result.error = "Нет response";
+                return result;
+            }
+            Object respObj = json.get("response");
+            JSONArray items = null;
+            if (respObj instanceof JSONObject) items = ((JSONObject) respObj).optJSONArray("items");
+            else if (respObj instanceof JSONArray) items = (JSONArray) respObj;
+
+            List<Audio> audios = new ArrayList<>();
+            if (items != null) {
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject it = items.getJSONObject(i);
+                    Audio a = new Audio();
+                    a.id = it.optInt("id");
+                    a.ownerId = it.optInt("owner_id");
+                    a.artist = it.optString("artist", "Unknown");
+                    a.title = it.optString("title", "Unknown");
+                    a.duration = it.optInt("duration", 0);
+                    a.url = it.optString("url", "");
+                    audios.add(a);
+                }
+            }
+            result.data = audios;
+            return result;
+        } catch (Exception e) {
+            Log.e(TAG, "getAudioFromPlaylist failed", e);
+            result.error = e.getMessage();
+            return result;
+        }
     }
 
     public static ApiResult<List<Audio>> getAudio(String token, int count, int offset) {
