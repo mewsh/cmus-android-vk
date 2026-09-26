@@ -390,8 +390,7 @@ public class VKMusicActivity extends Activity {
             String segUrl = new URL(new URL(baseUrl), segs.get(i)).toString();
             byte[] data = httpGetBytes(segUrl);
             if (key != null) {
-                byte[] iv = (ivFixed != null) ? ivFixed : seqToIv(seq);
-                data = aes128CbcDecrypt(data, key, iv);
+                data = decryptSegment(data, key, ivFixed, mediaSeq, i);
             }
 
             File tmp = new File(cacheDir, "seg_" + i + ".ts");
@@ -635,6 +634,52 @@ public class VKMusicActivity extends Activity {
             sb.append(String.format("%02x", data[off + i]));
         }
         return sb.toString();
+    }
+
+    /**
+     * Пробует разные IV и берёт тот, при котором расшифровка даёт
+     * валидный заголовок (TS 0x47, ID3, MP3 0xFF, ftyp).
+     */
+    private byte[] decryptSegment(byte[] data, byte[] key, byte[] ivFixed, int seqBase, int segIdx) throws Exception {
+        if (key == null || data == null || data.length < 16) return data;
+
+        List<byte[]> candidates = new ArrayList<>();
+        if (ivFixed != null) candidates.add(ivFixed);
+        candidates.add(seqToIv(seqBase + segIdx));
+        candidates.add(seqToIv(segIdx));
+        candidates.add(seqToIv(seqBase));
+        candidates.add(new byte[16]);
+
+        byte[] firstBlock = new byte[16];
+        System.arraycopy(data, 0, firstBlock, 0, 16);
+
+        for (byte[] iv : candidates) {
+            try {
+                byte[] dec1 = aes128CbcDecrypt(firstBlock, key, iv);
+                if (isPlausibleHeader(dec1)) {
+                    return aes128CbcDecrypt(data, key, iv);
+                }
+            } catch (Exception ignored) {}
+        }
+        // fallback — первый кандидат
+        return aes128CbcDecrypt(data, key, candidates.get(0));
+    }
+
+    private boolean isPlausibleHeader(byte[] b) {
+        if (b == null || b.length < 4) return false;
+        int u0 = b[0] & 0xFF;
+        int u1 = b[1] & 0xFF;
+        int u2 = b[2] & 0xFF;
+        int u3 = b[3] & 0xFF;
+        // TS sync
+        if (u0 == 0x47) return true;
+        // ID3v2
+        if (u0 == 0x49 && u1 == 0x44 && u2 == 0x33) return true;
+        // MP3 frame sync
+        if (u0 == 0xFF && (u1 & 0xE0) == 0xE0) return true;
+        // MP4 ftyp
+        if (u0 == 0x66 && u1 == 0x74 && u2 == 0x79 && u3 == 0x70) return true;
+        return false;
     }
 
     private void uiSetStatus(String s) {
