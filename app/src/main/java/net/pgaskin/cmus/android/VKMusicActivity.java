@@ -396,6 +396,7 @@ public class VKMusicActivity extends Activity {
 
             File tmp = new File(cacheDir, "seg_" + i + ".ts");
             try (FileOutputStream fo = new FileOutputStream(tmp)) { fo.write(data); }
+            diag.append("  hex[").append(i).append("]=").append(hex16(data, 0, 16)).append("\n");
 
             // MediaExtractor + MediaCodec на сегменте
             long before = pcm.size();
@@ -626,6 +627,14 @@ public class VKMusicActivity extends Activity {
                     .setPositiveButton("OK", null)
                     .show());
         });
+    }
+
+    private String hex16(byte[] data, int off, int len) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len && off + i < data.length; i++) {
+            sb.append(String.format("%02x", data[off + i]));
+        }
+        return sb.toString();
     }
 
     private void uiSetStatus(String s) {
