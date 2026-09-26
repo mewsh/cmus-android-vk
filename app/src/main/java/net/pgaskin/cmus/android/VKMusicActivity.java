@@ -469,9 +469,10 @@ public class VKMusicActivity extends Activity {
     }
 
     /**
-     * Распаковка MPEG-TS -> MP3.
-     * Автодетект размера пакета (188 = TS, 192 = M2TS с 4-байтовым префиксом).
-     * Затем считает PID-статистику и берёт самый крупный PID.
+     * Распаковка MPEG-TS -> MP3 с устойчивым поиском sync-байт.
+     * Не полагаемся на глобальное выравнивание: сканируем файл побайтово,
+     * ищем тройки 0x47 через 188 и 376 байт, и только оттуда шагаем.
+     * Это работает даже если HLS-сегменты склеены со сдвигом.
      */
     private void tsToMp3(File tsFile, File mp3File) throws Exception {
         byte[] data = new byte[(int) tsFile.length()];
@@ -484,33 +485,19 @@ public class VKMusicActivity extends Activity {
             }
         }
 
-        // --- детект выравнивания ---
-        int bestSize = 188, bestOffset = 0, bestCount = 0;
-        int scanLimit = Math.min(data.length, 192 * 200);
-        for (int size : new int[]{188, 192}) {
-            for (int off = 0; off < size && off < data.length; off++) {
-                int count = 0, total = 0;
-                for (int pos = off; pos < scanLimit; pos += size) {
-                    total++;
-                    if (data[pos] == 0x47) count++;
-                }
-                if (count > bestCount) { bestCount = count; bestSize = size; bestOffset = off; }
-            }
-        }
-        int prefixLen = bestSize - 188;
-        int start = bestOffset - prefixLen;
-        if (start < 0) start = 0;
-
-        // --- PID-статистика ---
+        // --- проход 1: PID-статистика по валидным sync-тройкам ---
         int[] pidBytes = new int[8192];
-        int totalPkts = 0, syncHits = 0;
-        for (int pos = start; pos + bestSize <= data.length; pos += bestSize) {
-            int ts = pos + prefixLen;
-            totalPkts++;
-            if (data[ts] != 0x47) continue;
-            syncHits++;
-            int pid = ((data[ts+1] & 0x1F) << 8) | (data[ts+2] & 0xFF);
-            pidBytes[pid] += 188;
+        int totalSyncPkts = 0;
+        int pos = 0;
+        while (pos + 188 * 3 <= data.length) {
+            if (data[pos] == 0x47 && data[pos + 188] == 0x47 && data[pos + 376] == 0x47) {
+                int pid = ((data[pos + 1] & 0x1F) << 8) | (data[pos + 2] & 0xFF);
+                pidBytes[pid] += 188;
+                totalSyncPkts++;
+                pos += 188;
+            } else {
+                pos += 1;
+            }
         }
         int topPid = -1, topBytes = 0;
         StringBuilder pidLog = new StringBuilder();
@@ -520,39 +507,44 @@ public class VKMusicActivity extends Activity {
                 if (pidBytes[i] > topBytes) { topBytes = pidBytes[i]; topPid = i; }
             }
         }
+        if (topPid < 0) throw new Exception("sync-пакетов нет, totalSyncPkts=" + totalSyncPkts);
 
-        // --- извлечение ---
+        // --- проход 2: извлекаем пакеты topPid ---
         ByteArrayOutputStream pesBuf = new ByteArrayOutputStream();
-        int pesCount = 0;
+        int pesCount = 0, takenPkts = 0;
         try (FileOutputStream out = new FileOutputStream(mp3File)) {
-            for (int pos = start; pos + bestSize <= data.length; pos += bestSize) {
-                int ts = pos + prefixLen;
-                if (data[ts] != 0x47) continue;
-                int pid = ((data[ts+1] & 0x1F) << 8) | (data[ts+2] & 0xFF);
-                if (pid != topPid) continue;
-                boolean pusi = (data[ts+1] & 0x40) != 0;
-                int afc = (data[ts+3] >> 4) & 0x03;
-                if (afc == 0 || afc == 2) continue;
+            pos = 0;
+            while (pos + 188 <= data.length) {
+                if (data[pos] != 0x47) { pos += 1; continue; }
+                // подтвердить что это sync: через 188 тоже 0x47 (если хватает длины)
+                if (pos + 376 <= data.length && data[pos + 188] != 0x47) {
+                    pos += 1; continue;
+                }
+                int pid = ((data[pos + 1] & 0x1F) << 8) | (data[pos + 2] & 0xFF);
+                if (pid != topPid) { pos += 188; continue; }
+                takenPkts++;
+                boolean pusi = (data[pos + 1] & 0x40) != 0;
+                int afc = (data[pos + 3] >> 4) & 0x03;
+                if (afc == 0 || afc == 2) { pos += 188; continue; }
                 int payloadStart = 4;
                 if (afc == 3) {
-                    int afLen = data[ts+4] & 0xFF;
+                    int afLen = data[pos + 4] & 0xFF;
                     payloadStart = 5 + afLen;
                 }
-                if (payloadStart >= 188) continue;
+                if (payloadStart >= 188) { pos += 188; continue; }
                 if (pusi && pesBuf.size() > 0) {
                     flushPesToMp3(pesBuf.toByteArray(), out);
                     pesBuf.reset();
                     pesCount++;
                 }
-                pesBuf.write(data, ts + payloadStart, 188 - payloadStart);
+                pesBuf.write(data, pos + payloadStart, 188 - payloadStart);
+                pos += 188;
             }
             if (pesBuf.size() > 0) { flushPesToMp3(pesBuf.toByteArray(), out); pesCount++; }
         }
 
-        String diag = "pktSize=" + bestSize + " offset=" + bestOffset + " hits=" + bestCount + "/" + totalPkts
-                + "\nsync=" + syncHits + " topPid=" + topPid + " pidBytes=" + topBytes
-                + "\npesCount=" + pesCount + " outBytes=" + mp3File.length()
-                + "\nfirst16=" + hex16(data, start, 16)
+        String diag = "totalSyncPkts=" + totalSyncPkts + " topPid=" + topPid + " pidBytes=" + topBytes
+                + "\ntakenPkts=" + takenPkts + " pesCount=" + pesCount + " outBytes=" + mp3File.length()
                 + "\npids=" + pidLog.toString();
 
         try (FileWriter fw = new FileWriter(new File(mp3File.getParentFile(), mp3File.getName() + ".diag"))) {
